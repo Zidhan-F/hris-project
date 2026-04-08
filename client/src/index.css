@@ -1,0 +1,135 @@
+/* ============================================
+   EMS — Global Design System
+   Theme: Clean Modern (Sentec EMS Style)
+   ============================================ */
+
+:root {
+  /* Primary Blues */
+  --blue-50: #E3F2FD;
+  --blue-100: #BBDEFB;
+  --blue-200: #90CAF9;
+  --blue-300: #64B5F6;
+  --blue-400: #42A5F5;
+  --blue-500: #2196F3;
+  --blue-600: #1E88E5;
+  --blue-700: #1565C0;
+  --blue-800: #0D47A1;
+  --blue-900: #0A2E6B;
+
+  /* Accent */
+  --cyan-400: #26C6DA;
+  --cyan-500: #00BCD4;
+  --teal-400: #26A69A;
+  --indigo-500: #3F51B5;
+  --green-500: #4CAF50;
+  --pink-500: #E91E63;
+  --orange-500: #FF9800;
+
+  /* Neutral */
+  --white: #FFFFFF;
+  --gray-50: #F8FAFC;
+  --gray-100: #F1F5F9;
+  --gray-200: #E2E8F0;
+  --gray-300: #CBD5E1;
+  --gray-400: #94A3B8;
+  --gray-500: #64748B;
+  --gray-600: #475569;
+  --gray-700: #334155;
+  --gray-800: #1E293B;
+
+  /* Sidebar Dark Theme */
+  --sidebar-bg-start: #1a1a2e;
+  --sidebar-bg-mid: #16213e;
+  --sidebar-bg-end: #0f3460;
+  --sidebar-text: rgba(255, 255, 255, 0.75);
+  --sidebar-text-active: #ffffff;
+  --sidebar-active-bg: var(--blue-500);
+  --sidebar-hover-bg: rgba(255, 255, 255, 0.08);
+
+  /* Semantic */
+  --bg-primary: #f0f4f8;
+  --bg-card: var(--white);
+  --text-primary: var(--gray-700);
+  --text-secondary: var(--gray-500);
+  --text-heading: var(--gray-800);
+  --accent: var(--blue-500);
+
+  /* Shadows */
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 10px 30px rgba(0, 0, 0, 0.1);
+  --shadow-xl: 0 20px 50px rgba(0, 0, 0, 0.12);
+
+  /* Typography */
+  --font-family: 'Inter', system-ui, -apple-system, sans-serif;
+
+  /* Radius */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+
+  /* Transitions */
+  --transition-fast: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-normal: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ============================================
+   Global Reset & Base Styles
+   ============================================ */
+*, *::before, *::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: var(--font-family);
+  font-size: 16px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+
+#root {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-family);
+  font-weight: 700;
+  color: var(--text-heading);
+  line-height: 1.2;
+}
+
+p {
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+img {
+  max-width: 100%;
+  height: auto;
+}
+
+a {
+  text-decoration: none;
+  color: var(--accent);
+  transition: color var(--transition-fast);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--gray-300); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: var(--gray-400); }
