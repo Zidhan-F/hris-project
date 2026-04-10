@@ -14,5 +14,5 @@ COPY . .
 # Expose port
 EXPOSE 5000
 
-# Start application in dev mode with hot reload
-CMD ["npm", "run", "dev"]
+# Start application in production mode
+CMD ["npm", "start"]
