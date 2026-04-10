@@ -635,4 +635,9 @@ app.put('/api/settings/office', async (req, res) => {
     }
 });
 
-app.listen(PORT, () => console.log(`🚀 Server nyala di port ${PORT}`));
+// Export for Vercel Serverless Functions
+if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
+    app.listen(PORT, () => console.log(`🚀 Server nyala di port ${PORT}`));
+}
+
+module.exports = app;

@@ -32,7 +32,7 @@ function RecenterMap({ lat, lng }) {
   return null;
 }
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+const API_URL = import.meta.env.VITE_API_URL || (window.location.hostname === 'localhost' ? 'http://localhost:5000' : '');
 
 const WELCOME_MESSAGES = [
   "Ready to conquer the day?",
