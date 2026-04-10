@@ -95,7 +95,9 @@ app.post('/api/auth/google', async (req, res) => {
                     manager: '',
                     teamMembers: [],
                     baseSalary: 5000000,
-                    allowance: 0
+                    allowance: 0,
+                    bankAccount: '-',
+                    payrollStatus: 'Unpaid'
                 }
             },
             { upsert: true, new: true, setDefaultsOnInsert: true }
@@ -127,7 +129,9 @@ app.post('/api/auth/google', async (req, res) => {
                 manager: user.manager,
                 teamMembers: user.teamMembers,
                 baseSalary: user.baseSalary,
-                allowance: user.allowance
+                allowance: user.allowance,
+                bankAccount: user.bankAccount,
+                payrollStatus: user.payrollStatus
             }
         });
 
@@ -358,13 +362,15 @@ app.delete('/api/employees/:id', async (req, res) => {
 app.put('/api/employees/:id/payroll', async (req, res) => {
     try {
         const { id } = req.params;
-        const { baseSalary, allowance, role } = req.body;
+        const { baseSalary, allowance, role, bankAccount, payrollStatus } = req.body;
         
         const updateData = { 
             baseSalary: Number(baseSalary), 
             allowance: Number(allowance) 
         };
         if (role) updateData.role = role;
+        if (bankAccount !== undefined) updateData.bankAccount = bankAccount;
+        if (payrollStatus) updateData.payrollStatus = payrollStatus;
 
         const updatedUser = await User.findByIdAndUpdate(
             id,
@@ -470,15 +476,37 @@ app.get('/api/requests/pending', async (req, res) => {
 // Get All Active Approved Leaves (for Dashboard)
 app.get('/api/requests/active-leave', async (req, res) => {
     try {
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
+        const todayStart = new Date();
+        todayStart.setHours(0, 0, 0, 0);
+        const todayEnd = new Date();
+        todayEnd.setHours(23, 59, 59, 999);
         
-        const activeLeaves = await Request.find({
-            status: 'Approved',
-            type: { $in: ['Leave', 'Sick', 'Permit'] },
-            startDate: { $lte: today },
-            endDate: { $gte: today }
-        });
+        const activeLeaves = await Request.aggregate([
+            {
+                $match: {
+                    status: 'Approved',
+                    type: { $in: ['Leave', 'Sick', 'Permit'] },
+                    startDate: { $lte: todayEnd },
+                    endDate: { $gte: todayStart }
+                }
+            },
+            {
+                $lookup: {
+                    from: 'users',
+                    localField: 'email',
+                    foreignField: 'email',
+                    as: 'userData'
+                }
+            },
+            {
+                $addFields: {
+                    profilePicture: { $arrayElemAt: ['$userData.profilePicture', 0] }
+                }
+            },
+            {
+                $project: { userData: 0 }
+            }
+        ]);
         
         res.status(200).json({ success: true, count: activeLeaves.length, data: activeLeaves });
     } catch (error) {

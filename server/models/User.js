@@ -26,6 +26,8 @@ const userSchema = new mongoose.Schema({
   // Payroll Info
   baseSalary: { type: Number, default: 5000000 },
   allowance: { type: Number, default: 0 },
+  bankAccount: { type: String, default: '-' },
+  payrollStatus: { type: String, enum: ['Unpaid', 'Paid'], default: 'Unpaid' },
   createdAt: { type: Date, default: Date.now }
 });
 

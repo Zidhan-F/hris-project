@@ -34,6 +34,16 @@ function RecenterMap({ lat, lng }) {
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
+const WELCOME_MESSAGES = [
+  "Ready to conquer the day?",
+  "Let's build something amazing today!",
+  "Your dedication drives our success.",
+  "Great things are waiting for you!",
+  "Every small win counts. Keep it up!",
+  "Glad to see you again!",
+  "Efficiency is the key to excellence."
+];
+
 const MENU_ITEMS = [
   { id: 'dashboard', label: 'Dashboard', icon: 'dashboard', hasSubmenu: false },
   { id: 'profile', label: 'Profile', icon: 'person_outline', hasSubmenu: false },
@@ -51,6 +61,20 @@ const MENU_ITEMS = [
   { id: 'payroll', label: 'Payroll', icon: 'account_balance_wallet', hasSubmenu: false },
   { id: 'leave', label: 'Leave', icon: 'event_busy', hasSubmenu: false },
 ];
+
+const getRequestIcon = (type) => {
+  const types = {
+    'Leave': { icon: 'event_available', color: '#3b82f6' },
+    'Permit': { icon: 'fact_check', color: '#10b981' },
+    'Sick': { icon: 'medical_services', color: '#f43f5e' },
+    'Overtime': { icon: 'more_time', color: '#8b5cf6' },
+    'Reimbursement': { icon: 'payments', color: '#f59e0b' },
+    'Timesheet': { icon: 'pending_actions', color: '#6366f1' },
+    'Expense': { icon: 'receipt_long', color: '#ec4899' },
+    'Other': { icon: 'help_outline', color: '#64748b' }
+  };
+  return types[type] || types['Other'];
+};
 
 function App() {
   const [user, setUser] = useState(null);
@@ -126,9 +150,18 @@ function App() {
   const [payrollTab, setPayrollTab] = useState('mine'); // 'mine' | 'manage'
   const [isEditingPayroll, setIsEditingPayroll] = useState(false);
   const [editPayrollData, setEditPayrollData] = useState({
-    id: '', name: '', baseSalary: 0, allowance: 0, role: ''
+    id: '', name: '', baseSalary: 0, allowance: 0, role: '', bankAccount: '-', payrollStatus: 'Unpaid'
   });
   const [isSavingPayroll, setIsSavingPayroll] = useState(false);
+  const [welcomeIndex, setWelcomeIndex] = useState(0);
+
+  // Rotate welcome messages
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setWelcomeIndex(prev => (prev + 1) % WELCOME_MESSAGES.length);
+    }, 8000);
+    return () => clearInterval(interval);
+  }, []);
 
   // Real-time clock
   useEffect(() => {
@@ -156,10 +189,10 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (activeMenu === 'dashboard' && ['admin', 'manager', 'hrd'].includes(user?.role)) {
+    if (activeMenu === 'dashboard') {
       fetchAttendanceSummary();
     }
-  }, [activeMenu, user?.role, fetchAttendanceSummary, history.length]);
+  }, [activeMenu, fetchAttendanceSummary, history.length]);
 
   // Geolocation tracking
   useEffect(() => {
@@ -381,6 +414,7 @@ function App() {
       return;
     }
     if (type === 'clock_out' && currentHour < 17) {
+      alert('Maaf, absen pulang belum bisa dilakukan. Absen harus sesuai jam pulang (setelah jam 05:00 sore).');
       setStatusMsg({ type: 'error', text: 'Absensi keluar baru bisa jam 05:00 sore.' });
       return;
     }
@@ -424,6 +458,19 @@ function App() {
       setStatusMsg({ type: 'error', text: 'Gagal mencatat absensi.' });
     } finally {
       setClockLoading(false);
+    }
+  };
+
+  const handleFabClick = () => {
+    if (activeMenu !== 'dashboard' || activeTab !== 'myinfo') {
+      setActiveMenu('dashboard');
+      setActiveTab('myinfo');
+      
+      // Feedback to user that we just navigated them
+      setStatusMsg({ type: 'info', text: 'Mengarahkan ke halaman absensi...' });
+      setTimeout(() => setStatusMsg(null), 2000);
+    } else {
+      handleClock(isClockedIn ? 'clock_out' : 'clock_in');
     }
   };
 
@@ -682,18 +729,22 @@ function App() {
       const res = await axios.put(`${API_URL}/api/employees/${editPayrollData.id}/payroll`, {
         baseSalary: editPayrollData.baseSalary,
         allowance: editPayrollData.allowance,
-        role: editPayrollData.role
+        role: editPayrollData.role,
+        bankAccount: editPayrollData.bankAccount,
+        payrollStatus: editPayrollData.payrollStatus
       });
       if (res.data.success) {
         setIsEditingPayroll(false);
         fetchEmployees();
         // Sync with own profile if editing self
-        if (editPayrollData.id === user.id) {
+        if (editPayrollData.id === user.id || editPayrollData.id === user._id) {
           setUser(prev => ({
             ...prev,
             baseSalary: editPayrollData.baseSalary,
             allowance: editPayrollData.allowance,
-            role: editPayrollData.role
+            role: editPayrollData.role,
+            bankAccount: editPayrollData.bankAccount,
+            payrollStatus: editPayrollData.payrollStatus
           }));
         }
         setStatusMsg({ type: 'success', text: 'Payroll & Role berhasil diperbarui!' });
@@ -796,6 +847,7 @@ function App() {
               <div className="welcome-info">
                 <p className="welcome-greeting">{getGreeting()}</p>
                 <h2 className="welcome-name">{user.name}!</h2>
+                <p className="welcome-dynamic-msg animate-fadeInRight">{WELCOME_MESSAGES[welcomeIndex]}</p>
                 <p className="welcome-position"><span className="material-icons-outlined">badge</span>{user.position || 'Staff'} - {user.role || 'Employee'}</p>
                 <div className="welcome-badges">
                   <span className="badge badge-department"><span className="material-icons-outlined">apartment</span>General</span>
@@ -804,28 +856,31 @@ function App() {
               </div>
             </div>
 
-            {/* Management Quick Stats */}
-            {['admin', 'manager', 'hrd'].includes(user?.role) && (
-              <div className="stats-grid animate-fadeInScale" style={{ padding: '0 20px', marginBottom: '24px', animationDelay: '0.1s' }}>
-                <div className="stat-card dark glass-panel">
-                  <div className="stat-label">Total Staff</div>
-                  <div className="stat-value">{attendanceSummary.totalStaff}</div>
-                </div>
-                <div className="stat-card glass-panel">
-                  <div className="stat-label">Present Today</div>
-                  <div className="stat-value" style={{ color: '#16a34a' }}>
-                    {attendanceSummary.presentCount}
-                    <span style={{ fontSize: '12px', marginLeft: '4px', fontWeight: '400', color: '#64748b' }}>
-                      ({Math.round((attendanceSummary.presentCount / (attendanceSummary.totalStaff || 1)) * 100)}%)
-                    </span>
-                  </div>
-                </div>
-                <div className="stat-card glass-panel">
-                  <div className="stat-label">Late Arrivals</div>
-                  <div className="stat-value" style={{ color: attendanceSummary.lateCount > 0 ? '#ef4444' : 'inherit' }}>{attendanceSummary.lateCount}</div>
-                </div>
+            <div className="stats-grid animate-fadeInScale" style={{ padding: '0 20px', marginBottom: '24px', animationDelay: '0.1s' }}>
+              <div className="stat-card glass-panel">
+                <div className="stat-label">Total Staff</div>
+                <div className="vibrant-value blue">{attendanceSummary.totalStaff}</div>
               </div>
-            )}
+              {['admin', 'manager', 'hrd'].includes(user?.role) && (
+                <>
+                  <div className="stat-card glass-panel">
+                    <div className="stat-label">Present Today</div>
+                    <div className="vibrant-value green">
+                      {attendanceSummary.presentCount}
+                      <span style={{ fontSize: '12px', marginLeft: '4px', fontWeight: '400', color: '#64748b' }}>
+                        ({Math.round((attendanceSummary.presentCount / (attendanceSummary.totalStaff || 1)) * 100)}%)
+                      </span>
+                    </div>
+                  </div>
+                  <div className="stat-card glass-panel">
+                    <div className="stat-label">Late Arrivals</div>
+                    <div className="vibrant-value red">
+                      {attendanceSummary.lateCount}
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
 
             <div className="tabs-container">
               <div className="tabs-row">
@@ -854,30 +909,41 @@ function App() {
 
 
                 <div className="feed-card animate-fadeInScale">
-                  <div className="feed-card-header"><span className="feed-card-header-icon">🌴</span><span className="feed-card-header-text">Recent Leave Requests</span></div>
-                  {recentActivities.length === 0 ? (
+                  <div className="feed-card-header"><span className="feed-card-header-icon">🗓️</span><span className="feed-card-header-text">On Leave Today</span></div>
+                  {onLeaveToday.length === 0 ? (
                     <div className="feed-card-empty" style={{ padding: '20px', textAlign: 'center', color: '#64748b', fontSize: '13px' }}>
-                      No recent updates available.
+                      Everyone is present today.
                     </div>
                   ) : (
-                    recentActivities.map((item, idx) => (
-                      <div key={item._id || idx} className="feed-card-item">
-                        <div className="feed-card-item-avatar">
-                          {item.profilePicture ? (
-                            <img src={item.profilePicture} alt="" referrerPolicy="no-referrer" />
-                          ) : (
-                            <div className={`feed-card-item-avatar-placeholder ${idx % 2 === 0 ? 'blue' : 'purple'}`}>
-                              {getInitials(item.name)}
+                    onLeaveToday.map((item, idx) => {
+                      const iconData = getRequestIcon(item.type);
+                      return (
+                        <div key={item._id || idx} className="feed-card-item">
+                          <div className="feed-card-item-avatar">
+                            {item.profilePicture ? (
+                              <img src={item.profilePicture} alt="" referrerPolicy="no-referrer" />
+                            ) : (
+                              <div className={`feed-card-item-avatar-placeholder ${idx % 2 === 0 ? 'blue' : 'purple'}`}>
+                                {getInitials(item.name)}
+                              </div>
+                            )}
+                          </div>
+                          <div className="feed-card-item-info">
+                            <div className="feed-card-item-name">{item.name}</div>
+                            <div className="feed-card-item-type">
+                              <span className="material-icons-outlined" style={{ fontSize: '14px', verticalAlign: 'middle', marginRight: '4px', color: iconData.color }}>
+                                {iconData.icon}
+                              </span>
+                              {item.type}
                             </div>
-                          )}
+                          </div>
+                          <div className="feed-card-item-date">
+                            {new Date(item.startDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                            {item.endDate && item.startDate !== item.endDate ? ` - ${new Date(item.endDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : ''}
+                          </div>
                         </div>
-                        <div className="feed-card-item-info">
-                          <div className="feed-card-item-name">{item.name}</div>
-                          <div className="feed-card-item-type">{item.type} • {item.status}</div>
-                        </div>
-                        <div className="feed-card-item-date">{new Date(item.startDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</div>
-                      </div>
-                    ))
+                      );
+                    })
                   )}
                 </div>
               </div>
@@ -1242,6 +1308,7 @@ function App() {
                     </div>
                     <div className="payslip-meta">
                       <div className="payslip-meta-item"><span>Employee ID</span><strong>{user.employeeId || `EMS-${user._id?.substring(0, 4).toUpperCase() || '101'}`}</strong></div>
+                      <div className="payslip-meta-item"><span>Bank Account</span><strong>{user.bankAccount || '-'}</strong></div>
                     </div>
                   </div>
 
@@ -1278,7 +1345,9 @@ function App() {
 
                   <div className="payslip-footer">
                     <p>Generated automatically on {new Date().toLocaleDateString('id-ID')}</p>
-                    <div className="payslip-status-badge">PAID</div>
+                    <div className={`payslip-status-badge ${user.payrollStatus === 'Paid' ? 'paid' : 'unpaid'}`}>
+                      {user.payrollStatus === 'Paid' ? 'PAID' : 'UNPAID'}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1321,9 +1390,11 @@ function App() {
                       <thead>
                         <tr>
                           <th>Karyawan</th>
+                          <th>No Rekening</th>
                           <th>Gaji Pokok</th>
                           <th>Tunjangan</th>
                           <th>Total</th>
+                          <th>Status</th>
                           <th>Aksi</th>
                         </tr>
                       </thead>
@@ -1343,9 +1414,17 @@ function App() {
                                 </div>
                               </div>
                             </td>
+                            <td>
+                              <div style={{ fontSize: '12px', fontWeight: '500', color: '#475569' }}>{emp.bankAccount || '-'}</div>
+                            </td>
                             <td>{formatCurrency(emp.baseSalary || 5000000)}</td>
                             <td>{formatCurrency(emp.allowance || 0)}</td>
                             <td style={{ fontWeight: '700', color: '#2563eb' }}>{formatCurrency((emp.baseSalary || 5000000) + (emp.allowance || 0))}</td>
+                            <td>
+                              <span className={`payroll-status-badge ${emp.payrollStatus === 'Paid' ? 'paid' : 'unpaid'}`}>
+                                {emp.payrollStatus === 'Paid' ? 'PAID' : 'UNPAID'}
+                              </span>
+                            </td>
                             <td>
                               <button className="btn-edit-payroll" onClick={() => {
                                 setEditPayrollData({
@@ -1353,7 +1432,9 @@ function App() {
                                   name: emp.name,
                                   baseSalary: emp.baseSalary || 5000000,
                                   allowance: emp.allowance || 0,
-                                  role: emp.role || 'employee'
+                                  role: emp.role || 'employee',
+                                  bankAccount: emp.bankAccount || '-',
+                                  payrollStatus: emp.payrollStatus || 'Unpaid'
                                 });
                                 setIsEditingPayroll(true);
                               }}>
@@ -1424,7 +1505,7 @@ function App() {
                                 <td>
                                   <span className={`status-pill ${req.status.toLowerCase()}`}>
                                     <span className="material-icons-outlined" style={{ fontSize: '14px', verticalAlign: 'middle', marginRight: '4px' }}>
-                                      {req.status === 'Approved' ? 'check_circle' : req.status === 'Rejected' ? 'cancel' : 'pending'}
+                                      {req.status === 'Approved' ? 'check_circle' : req.status === 'Rejected' ? 'cancel' : req.status === 'Returned' ? 'assignment_return' : 'pending'}
                                     </span>
                                     {req.status}
                                   </span>
@@ -1466,6 +1547,7 @@ function App() {
                         </div>
                         <div className="approve-footer">
                           <button className="btn-reject" onClick={() => handleApproveRequest(req._id, 'Rejected')}>Reject</button>
+                          <button className="btn-return" onClick={() => handleApproveRequest(req._id, 'Returned')}>Return</button>
                           <button className="btn-approve" onClick={() => handleApproveRequest(req._id, 'Approved')}>Approve</button>
                         </div>
                       </div>
@@ -1646,7 +1728,7 @@ function App() {
       </main>
 
       {/* Floating Clock Button */}
-      <button className={`fab-clock ${isClockedIn ? 'is-in' : 'is-out'}`} onClick={() => handleClock(isClockedIn ? 'clock_out' : 'clock_in')} disabled={clockLoading}>
+      <button className={`fab-clock ${isClockedIn ? 'is-in' : 'is-out'}`} onClick={handleFabClick} disabled={clockLoading}>
         <span className="material-icons-outlined">{clockLoading ? 'sync' : (isClockedIn ? 'logout' : 'login')}</span>
       </button>
 
@@ -1906,6 +1988,17 @@ function App() {
                   <option value="hrd">HRD</option>
                   <option value="manager">Manager</option>
                   <option value="admin">Admin</option>
+                </select>
+              </div>
+              <div className="form-group">
+                <label>Bank Account Number</label>
+                <input value={editPayrollData.bankAccount} onChange={e => setEditPayrollData({ ...editPayrollData, bankAccount: e.target.value })} placeholder="e.g. BCA 12345678" />
+              </div>
+              <div className="form-group">
+                <label>Payroll Status</label>
+                <select value={editPayrollData.payrollStatus} onChange={e => setEditPayrollData({ ...editPayrollData, payrollStatus: e.target.value })} required>
+                  <option value="Unpaid">Unpaid</option>
+                  <option value="Paid">Paid</option>
                 </select>
               </div>
               <p style={{ fontSize: '12px', color: '#64748b', marginTop: '4px' }}>

@@ -14,7 +14,7 @@ const requestSchema = new mongoose.Schema({
   amount: { type: Number }, // For Reimbursement/Expense
   status: { 
     type: String, 
-    enum: ['Pending', 'Approved', 'Rejected'], 
+    enum: ['Pending', 'Approved', 'Rejected', 'Returned'], 
     default: 'Pending' 
   },
   timestamp: { type: Date, default: Date.now }

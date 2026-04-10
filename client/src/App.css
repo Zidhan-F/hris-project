@@ -143,6 +143,51 @@ button:active {
   letter-spacing: 0.5px;
 }
 
+.glass-panel {
+  background: rgba(255, 255, 255, 0.7) !important;
+  backdrop-filter: blur(12px) saturate(180%) !important;
+  -webkit-backdrop-filter: blur(12px) saturate(180%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.45) !important;
+  box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.1) !important;
+}
+
+.welcome-dynamic-msg {
+  font-size: 14px;
+  color: #3b82f6;
+  font-weight: 600;
+  margin: 4px 0 12px 0;
+  opacity: 0.9;
+  min-height: 20px;
+}
+
+.stat-card.glass-panel {
+  position: relative;
+  overflow: hidden;
+}
+
+.stat-card.glass-panel::after {
+  content: '';
+  position: absolute;
+  top: -50%;
+  left: -50%;
+  width: 200%;
+  height: 200%;
+  background: linear-gradient(
+    45deg,
+    transparent,
+    rgba(255, 255, 255, 0.2),
+    transparent
+  );
+  transform: rotate(45deg);
+  animation: shine 4s infinite;
+  pointer-events: none;
+}
+
+@keyframes shine {
+  0% { transform: translateX(-100%) rotate(45deg); }
+  100% { transform: translateX(100%) rotate(45deg); }
+}
+
 .stat-card.dark .stat-label {
   color: #94a3b8;
 }
@@ -153,9 +198,39 @@ button:active {
 
 .stat-value {
   font-size: 26px;
-  font-weight: 800;
+  font-weight: 700;
   color: var(--gray-800);
   letter-spacing: -0.5px;
+}
+
+.vibrant-value {
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.vibrant-value.blue {
+  background: linear-gradient(135deg, #2563eb 0%, #3b82f6 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.vibrant-value.green {
+  background: linear-gradient(135deg, #059669 0%, #10b981 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.vibrant-value.red {
+  background: linear-gradient(135deg, #dc2626 0%, #f87171 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
 
 .stat-card.dark .stat-value {
@@ -2944,13 +3019,21 @@ button:active {
 }
 
 .payslip-status-badge {
-  background: #dcfce7;
-  color: #166534;
   font-size: 11px;
   font-weight: 700;
   padding: 4px 10px;
   border-radius: 20px;
   letter-spacing: 1px;
+}
+
+.payslip-status-badge.paid {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.payslip-status-badge.unpaid {
+  background: #fee2e2;
+  color: #991b1b;
 }
 
 
@@ -3599,4 +3682,47 @@ button:active {
 
 .print-btn .material-icons-outlined {
   font-size: 18px;
+}
+.status-pill.returned {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.status-pill.returned .material-icons-outlined {
+  color: #d97706;
+}
+
+.btn-return {
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 13px;
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fcd34d;
+}
+
+.btn-return:hover {
+  background: #fde68a;
+}
+
+.payroll-status-badge {
+  padding: 4px 10px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  display: inline-block;
+}
+
+.payroll-status-badge.paid {
+  background: #dcfce7;
+  color: #166534;
+  border: 1px solid #bbf7d0;
+}
+
+.payroll-status-badge.unpaid {
+  background: #fee2e2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
 }
