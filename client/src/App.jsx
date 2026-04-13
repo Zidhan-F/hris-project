@@ -55,7 +55,8 @@ const MENU_ITEMS = [
     hasSubmenu: true,
     submenus: [
       { id: 'att-personal', label: 'Personal' },
-      { id: 'att-schedule', label: 'Schedule' }
+      { id: 'att-schedule', label: 'Schedule' },
+      { id: 'att-report', label: 'Monthly Report' }
     ]
   },
   { id: 'payroll', label: 'Payroll', icon: 'account_balance_wallet', hasSubmenu: false },
@@ -140,6 +141,11 @@ function App() {
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [personalAttendance, setPersonalAttendance] = useState([]);
   const [personalLoading, setPersonalLoading] = useState(false);
+  const [workDays, setWorkDays] = useState(['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']);
+  const [monthlyReports, setMonthlyReports] = useState([]);
+  const [isFetchingReports, setIsFetchingReports] = useState(false);
+  const [reportMonth, setReportMonth] = useState(new Date().getMonth());
+  const [reportYear, setReportYear] = useState(new Date().getFullYear());
 
   // Profile Edit States
   const [isEditingProfile, setIsEditingProfile] = useState(false);
@@ -178,6 +184,26 @@ function App() {
   }, []);
 
   useEffect(() => { fetchOfficeSettings(); }, [fetchOfficeSettings]);
+
+  const fetchWorkDays = useCallback(async () => {
+    try {
+      const res = await axios.get(`${API_URL}/api/settings/workdays`);
+      if (res.data.success) setWorkDays(res.data.data);
+    } catch (err) { console.error('Error fetching work days:', err); }
+  }, []);
+
+  useEffect(() => { fetchWorkDays(); }, [fetchWorkDays]);
+
+  const fetchMonthlyReports = useCallback(async (month, year) => {
+    setIsFetchingReports(true);
+    try {
+      const res = await axios.get(`${API_URL}/api/attendance/summary/monthly`, {
+        params: { month, year }
+      });
+      if (res.data.success) setMonthlyReports(res.data.reports);
+    } catch (err) { console.error('Error fetching reports:', err); }
+    finally { setIsFetchingReports(false); }
+  }, []);
 
   // Dashboard Stats State
   const [attendanceSummary, setAttendanceSummary] = useState({ totalStaff: 0, presentCount: 0, lateCount: 0 });
@@ -368,12 +394,31 @@ function App() {
       if (repo.type === 'clock_out') days[dateKey].out = d;
     });
 
+    const now = currentTime;
+    const todayStr = now.toDateString();
+    const currentHour = now.getHours();
+
     return Object.entries(days).map(([date, times]) => {
       let hours = 0;
+      let isValid = false;
+      const isToday = date === todayStr;
+
       if (times.in && times.out) {
         hours = Math.abs(times.out - times.in) / (1000 * 60 * 60);
+        isValid = true;
+      } else if (times.in && isToday && currentHour < 19) {
+        // Masih dalam jam kerja (sebelum jam 7 malam)
+        isValid = true;
       }
-      return { date, in: times.in, out: times.out, hours: hours.toFixed(2) };
+
+      return { 
+        date, 
+        in: times.in, 
+        out: times.out, 
+        hours: hours.toFixed(2), 
+        isValid,
+        onTime: times.in ? (times.in.getHours() < 9 || (times.in.getHours() === 9 && times.in.getMinutes() <= 30)) : false
+      };
     }).sort((a, b) => new Date(b.date) - new Date(a.date));
   };
 
@@ -434,6 +479,14 @@ function App() {
     if (!photo) {
       setStatusMsg({ type: 'error', text: 'Kamera belum aktif. Izinkan akses kamera.' });
       return;
+    }
+
+    // Check work day
+    const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const currentDayName = dayNames[now.getDay()];
+    if (!workDays.includes(currentDayName) && type === 'clock_in') {
+      const confirmProceed = window.confirm(`Hari ini (${currentDayName}) bukan hari kerja wajib sesuai pengaturan. Tetap ingin absen?`);
+      if (!confirmProceed) return;
     }
 
     setClockLoading(true);
@@ -507,6 +560,7 @@ function App() {
     setActiveSubMenu(subId);
     setSelectedEmployee(null);
     if (subId === 'att-personal') fetchPersonalAttendance(selectedMonth, selectedYear);
+    if (subId === 'att-report') fetchMonthlyReports(reportMonth, reportYear);
     closeSidebar();
   };
 
@@ -781,10 +835,33 @@ function App() {
     );
   }
 
-  const isClockedIn = history.length > 0 && history[0].type === 'clock_in';
+  const isClockedIn = history.length > 0 && 
+    history[0].type === 'clock_in' && 
+    new Date(history[0].timestamp).toDateString() === currentTime.toDateString() &&
+    currentTime.getHours() < 19;
 
   return (
     <div className="dashboard-page">
+      {/* 7 PM Clock-out Reminder Banner */}
+      {(() => {
+        const hr = currentTime.getHours();
+        const mins = currentTime.getMinutes();
+        const totalMins = hr * 60 + mins;
+        const deadlineMins = 19 * 60; // 7 PM
+        const warningStart = 18 * 60; // 6 PM
+        
+        if (isClockedIn && totalMins >= warningStart && totalMins < deadlineMins) {
+          const minsRemaining = deadlineMins - totalMins;
+          return (
+            <div className="deadline-reminder-banner animate-fadeInDown">
+              <span className="material-icons-outlined">warning</span>
+              <p>Peringatan: <strong>{minsRemaining} menit</strong> lagi menuju batas waktu clock-out (19:00). Segera absen pulang!</p>
+            </div>
+          );
+        }
+        return null;
+      })()}
+
       {sidebarOpen && <div className="sidebar-overlay" onClick={closeSidebar}></div>}
       <aside className={`sidebar ${sidebarOpen ? 'open' : ''} ${sidebarClosing ? 'sidebar-closing' : ''}`}>
         <div className="sidebar-header">
@@ -803,9 +880,11 @@ function App() {
               </button>
               {item.hasSubmenu && expandedMenu === item.id && item.submenus && (
                 <div className="sidebar-submenus">
-                  {item.submenus.map(sub => (
-                    <button key={sub.id} className={`sidebar-submenu-item ${activeSubMenu === sub.id ? 'active' : ''}`} onClick={() => handleSubMenuClick(item.id, sub.id)}>{sub.label}</button>
-                  ))}
+                  {item.submenus
+                    .filter(sub => !(sub.id === 'att-report' && user?.role === 'employee'))
+                    .map(sub => (
+                      <button key={sub.id} className={`sidebar-submenu-item ${activeSubMenu === sub.id ? 'active' : ''}`} onClick={() => handleSubMenuClick(item.id, sub.id)}>{sub.label}</button>
+                    ))}
                 </div>
               )}
             </React.Fragment>
@@ -1664,29 +1743,39 @@ function App() {
               </div>
             </div>
 
-            <div className="stats-grid">
-              <div className="stats-card stats-blue animate-fadeInUp" style={{ animationDelay: '0s' }}>
-                <div className="stats-card-icon"><span className="material-icons-outlined">schedule</span></div>
-                <div className="stats-card-content">
-                  <span className="stats-label">Total Hours</span>
-                  <span className="stats-value">{personalAttendance.reduce((acc, curr) => acc + parseFloat(curr.hours || 0), 0).toFixed(1)}h</span>
+            {(() => {
+              const processed = groupAttendanceByDay(personalAttendance);
+              const totalHrs = processed.reduce((acc, curr) => acc + (curr.isValid ? parseFloat(curr.hours || 0) : 0), 0);
+              const daysPresent = processed.filter(d => d.isValid).length;
+              const onTimeCount = processed.filter(d => d.isValid && d.onTime).length;
+              const onTimeRate = daysPresent > 0 ? Math.round((onTimeCount / daysPresent) * 100) : 0;
+
+              return (
+                <div className="stats-grid">
+                  <div className="stats-card stats-blue animate-fadeInUp" style={{ animationDelay: '0s' }}>
+                    <div className="stats-card-icon"><span className="material-icons-outlined">schedule</span></div>
+                    <div className="stats-card-content">
+                      <span className="stats-label">Total Hours</span>
+                      <span className="stats-value">{totalHrs.toFixed(1)}h</span>
+                    </div>
+                  </div>
+                  <div className="stats-card stats-green animate-fadeInUp" style={{ animationDelay: '0.1s' }}>
+                    <div className="stats-card-icon"><span className="material-icons-outlined">calendar_today</span></div>
+                    <div className="stats-card-content">
+                      <span className="stats-label">Days Present</span>
+                      <span className="stats-value">{daysPresent}d</span>
+                    </div>
+                  </div>
+                  <div className="stats-card stats-amber animate-fadeInUp" style={{ animationDelay: '0.2s' }}>
+                    <div className="stats-card-icon"><span className="material-icons-outlined">verified</span></div>
+                    <div className="stats-card-content">
+                      <span className="stats-label">On Time</span>
+                      <span className="stats-value">{onTimeRate}%</span>
+                    </div>
+                  </div>
                 </div>
-              </div>
-              <div className="stats-card stats-green animate-fadeInUp" style={{ animationDelay: '0.1s' }}>
-                <div className="stats-card-icon"><span className="material-icons-outlined">calendar_today</span></div>
-                <div className="stats-card-content">
-                  <span className="stats-label">Days Present</span>
-                  <span className="stats-value">{personalAttendance.length}d</span>
-                </div>
-              </div>
-              <div className="stats-card stats-amber animate-fadeInUp" style={{ animationDelay: '0.2s' }}>
-                <div className="stats-card-icon"><span className="material-icons-outlined">verified</span></div>
-                <div className="stats-card-content">
-                  <span className="stats-label">On Time</span>
-                  <span className="stats-value">92%</span>
-                </div>
-              </div>
-            </div>
+              );
+            })()}
 
             {personalLoading ? <div className="loading-spinner"></div> : (
               <div className="att-cards-grid">
@@ -1721,6 +1810,71 @@ function App() {
                       </div>
                     </div>
                   ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ATTENDANCE MONTHLY REPORT VIEW */}
+        {activeMenu === 'attendance' && activeSubMenu === 'att-report' && user?.role !== 'employee' && (
+          <div className="attendance-report-view animate-fadeInUp">
+            <div className="attendance-personal-header">
+              <h3>Monthly Attendance Report</h3>
+              <div className="header-filters">
+                <select value={reportMonth} onChange={e => { setReportMonth(parseInt(e.target.value)); fetchMonthlyReports(parseInt(e.target.value), reportYear); }}>
+                  {['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].map((name, i) => <option key={i} value={i}>{name}</option>)}
+                </select>
+                <select value={reportYear} onChange={e => { setReportYear(parseInt(e.target.value)); fetchMonthlyReports(reportMonth, parseInt(e.target.value)); }}>
+                  {[2024, 2025, 2026].map(y => <option key={y} value={y}>{y}</option>)}
+                </select>
+                <button className="btn-export-csv" onClick={() => {
+                  const headers = ['Name', 'Email', 'Position', 'Days Present', 'Late Days', 'Total Hours', 'Rate %'];
+                  const rows = monthlyReports.map(r => [r.name, r.email, r.position, r.daysPresent, r.lateDays, r.totalHours, r.attendanceRate]);
+                  const csvContent = [headers, ...rows].map(e => e.join(",")).join("\n");
+                  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                  const url = URL.createObjectURL(blob);
+                  const link = document.createElement("a");
+                  link.setAttribute("href", url);
+                  link.setAttribute("download", `Attendance_Report_${reportMonth + 1}_${reportYear}.csv`);
+                  link.click();
+                }}>
+                  <span className="material-icons-outlined">download</span> Export CSV
+                </button>
+              </div>
+            </div>
+
+            {isFetchingReports ? <div className="loading-spinner"></div> : (
+              <div className="table-responsive" style={{ background: 'white', borderRadius: '16px', padding: '16px', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}>
+                <table className="request-table">
+                  <thead>
+                    <tr>
+                      <th>Employee</th>
+                      <th>Days Present</th>
+                      <th>Late Days</th>
+                      <th>Total Hours</th>
+                      <th>Work Rate</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {monthlyReports.map(report => (
+                      <tr key={report.id}>
+                        <td>
+                          <div style={{ fontWeight: '600' }}>{report.name}</div>
+                          <div style={{ fontSize: '11px', color: '#64748b' }}>{report.position}</div>
+                        </td>
+                        <td><span className="stat-pill-green">{report.daysPresent} days</span></td>
+                        <td><span className={report.lateDays > 0 ? 'stat-pill-red' : 'stat-pill-gray'}>{report.lateDays} sessions</span></td>
+                        <td><strong>{report.totalHours}h</strong></td>
+                        <td>
+                          <div className="progress-bar-mini">
+                            <div className="progress-fill" style={{ width: `${Math.min(100, report.attendanceRate)}%`, background: parseInt(report.attendanceRate) > 80 ? '#10b981' : '#f59e0b' }}></div>
+                          </div>
+                          <span style={{ fontSize: '11px', fontWeight: 'bold' }}>{report.attendanceRate}%</span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             )}
           </div>
@@ -1953,6 +2107,34 @@ function App() {
               <p style={{ fontSize: '12px', color: '#64748b', marginTop: '4px' }}>
                 💡 Tip: Buka Google Maps, klik kanan pada lokasi kantor, lalu salin koordinatnya.
               </p>
+
+              <div className="form-group" style={{ marginTop: '20px', padding: '15px', background: '#f8fafc', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', fontWeight: 'bold' }}>
+                  <span className="material-icons-outlined">calendar_month</span> Pengaturan Hari Kerja
+                </label>
+                <div className="workdays-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: '10px' }}>
+                  {['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].map(day => (
+                    <label key={day} style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px' }}>
+                      <input 
+                        type="checkbox" 
+                        checked={workDays.includes(day)} 
+                        onChange={async (e) => {
+                          let newDays;
+                          if (e.target.checked) newDays = [...workDays, day];
+                          else newDays = workDays.filter(d => d !== day);
+                          
+                          setWorkDays(newDays);
+                          try {
+                            await axios.put(`${API_URL}/api/settings/workdays`, { days: newDays });
+                          } catch (err) { console.error('Error saving workdays:', err); }
+                        }}
+                      />
+                      {day}
+                    </label>
+                  ))}
+                </div>
+              </div>
+
               <div className="modal-footer">
                 <button type="button" className="btn-cancel" onClick={() => setShowOfficeModal(false)}>Cancel</button>
                 <button type="submit" className="btn-save">Save Location</button>

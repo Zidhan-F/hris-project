@@ -231,17 +231,26 @@ app.get('/api/attendance/summary/today', async (req, res) => {
         const totalStaff = await User.countDocuments({});
 
         // 2. Karyawan yang Absen Masuk Hari Ini (Unique)
-        const presentEmails = await Attendance.distinct('email', {
-            type: 'clock_in',
+        // Dihitung hadir jika sudah clock_in DAN (masih sebelum jam 7 malam ATAU sudah clock_out)
+        const todayRecords = await Attendance.find({
             timestamp: { $gte: start, $lte: end }
         });
-        const presentCount = presentEmails.length;
 
-        // 3. Karyawan Terlambat (Absen Masuk > 09:10 AM)
-        const lateThreshold = new Date(new Date().setHours(9, 10, 0, 0));
+        const usersAttendance = {};
+        todayRecords.forEach(r => {
+            if (!usersAttendance[r.email]) usersAttendance[r.email] = { in: false, out: false };
+            if (r.type === 'clock_in') usersAttendance[r.email].in = true;
+            if (r.type === 'clock_out') usersAttendance[r.email].out = true;
+        });
+
+        const isBefore7PM = new Date().getHours() < 19;
+        const presentCount = Object.values(usersAttendance).filter(u => u.in && (u.out || isBefore7PM)).length;
+
+        // 3. Karyawan Terlambat (Absen Masuk >= 09:30 AM)
+        const lateThreshold = new Date(new Date().setHours(9, 30, 0, 0));
         const lateRecords = await Attendance.distinct('email', {
             type: 'clock_in',
-            timestamp: { $gte: lateThreshold } // Sederhananya, jika jam > 9:10 hari ini
+            timestamp: { $gte: lateThreshold } // Jika jam >= 9:30 hari ini
         });
         const lateCount = lateRecords.length;
 
@@ -254,6 +263,84 @@ app.get('/api/attendance/summary/today', async (req, res) => {
     } catch (error) {
         console.error('Error fetching attendance summary:', error);
         res.status(500).json({ success: false, message: 'Gagal mengambil ringkasan absensi.' });
+    }
+});
+
+// ============================================================
+// 5.6 ENDPOINT: Ambil Laporan Bulanan (Semua Karyawan)
+// ============================================================
+app.get('/api/attendance/summary/monthly', async (req, res) => {
+    try {
+        const { month, year } = req.query; // 0-11, 202X
+        const start = new Date(year, month, 1);
+        const end = new Date(year, parseInt(month) + 1, 0, 23, 59, 59);
+
+        // 1. Ambil Semua User
+        const users = await User.find({}).sort({ name: 1 });
+        
+        // 2. Ambil Semua Absensi bulan ini
+        const attendance = await Attendance.find({
+            timestamp: { $gte: start, $lte: end }
+        });
+
+        const lateThresholdMinutes = 9 * 60 + 30; // 09:30
+
+        const reports = users.map(user => {
+            const userAtt = attendance.filter(a => a.email.toLowerCase() === user.email.toLowerCase());
+            
+            // Group by date
+            const days = {};
+            userAtt.forEach(a => {
+                const dKey = new Date(a.timestamp).toDateString();
+                if (!days[dKey]) days[dKey] = { in: null, out: null };
+                if (a.type === 'clock_in') days[dKey].in = a.timestamp;
+                if (a.type === 'clock_out') days[dKey].out = a.timestamp;
+            });
+
+            let totalHours = 0;
+            let daysPresent = 0;
+            let lateDays = 0;
+
+            const now = new Date();
+            const todayStr = now.toDateString();
+
+            Object.entries(days).forEach(([dateStr, times]) => {
+                const isToday = dateStr === todayStr;
+                const isPast7PM = now.getHours() >= 19;
+                
+                let isValid = false;
+                if (times.in && times.out) {
+                    isValid = true;
+                    totalHours += Math.abs(new Date(times.out) - new Date(times.in)) / (1000 * 60 * 60);
+                } else if (times.in && isToday && !isPast7PM) {
+                    isValid = true;
+                }
+
+                if (isValid) {
+                    daysPresent++;
+                    const inTime = new Date(times.in);
+                    if (inTime.getHours() * 60 + inTime.getMinutes() >= lateThresholdMinutes) {
+                        lateDays++;
+                    }
+                }
+            });
+
+            return {
+                id: user._id,
+                name: user.name,
+                email: user.email,
+                position: user.position || 'Employee',
+                daysPresent,
+                lateDays,
+                totalHours: totalHours.toFixed(1),
+                attendanceRate: ((daysPresent / 22) * 100).toFixed(0) // Default 22 work days
+            };
+        });
+
+        res.json({ success: true, reports });
+    } catch (error) {
+        console.error('Error fetching monthly report:', error);
+        res.status(500).json({ success: false, message: 'Gagal mengambil laporan bulanan.' });
     }
 });
 
@@ -632,6 +719,33 @@ app.put('/api/settings/office', async (req, res) => {
         res.json({ success: true, message: 'Lokasi kantor diperbarui!', data: setting.value });
     } catch (error) {
         res.status(500).json({ success: false, message: 'Failed to update settings.' });
+    }
+});
+
+// GET & PUT Work Days
+app.get('/api/settings/workdays', async (req, res) => {
+    try {
+        const setting = await Settings.findOne({ key: 'work_days' });
+        if (!setting) {
+            return res.json({ success: true, data: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'] });
+        }
+        res.json({ success: true, data: setting.value });
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Failed to get workdays.' });
+    }
+});
+
+app.put('/api/settings/workdays', async (req, res) => {
+    try {
+        const { days } = req.body; // Array of strings
+        const setting = await Settings.findOneAndUpdate(
+            { key: 'work_days' },
+            { value: days },
+            { upsert: true, new: true }
+        );
+        res.json({ success: true, message: 'Hari kerja diperbarui!', data: setting.value });
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Failed to update workdays.' });
     }
 });
 
