@@ -117,7 +117,7 @@ function App() {
   // Admin Management States
   const [isEditingEmployee, setIsEditingEmployee] = useState(false);
   const [editEmployeeData, setEditEmployeeData] = useState({
-    position: '', department: '', role: '', employeeId: '', employmentStatus: '', manager: '', teamMembers: []
+    position: '', department: '', role: '', employeeId: '', employmentStatus: '', manager: '', teamMembers: [], leaveQuota: 0, contractEnd: ''
   });
   const [isSavingEmployee, setIsSavingEmployee] = useState(false);
 
@@ -156,7 +156,7 @@ function App() {
   const [payrollTab, setPayrollTab] = useState('mine'); // 'mine' | 'manage'
   const [isEditingPayroll, setIsEditingPayroll] = useState(false);
   const [editPayrollData, setEditPayrollData] = useState({
-    id: '', name: '', baseSalary: 0, allowance: 0, role: '', bankAccount: '-', payrollStatus: 'Unpaid'
+    id: '', name: '', baseSalary: 0, allowance: 0, role: '', bankAccount: '-', payrollStatus: 'Unpaid', leaveQuota: 0, contractEnd: ''
   });
   const [isSavingPayroll, setIsSavingPayroll] = useState(false);
   const [welcomeIndex, setWelcomeIndex] = useState(0);
@@ -390,8 +390,16 @@ function App() {
       if (isNaN(d.getTime())) return;
       const dateKey = d.toDateString();
       if (!days[dateKey]) days[dateKey] = { in: null, out: null };
-      if (repo.type === 'clock_in') days[dateKey].in = d;
-      if (repo.type === 'clock_out') days[dateKey].out = d;
+      if (repo.type === 'clock_in') {
+        if (!days[dateKey].in || d < days[dateKey].in) {
+          days[dateKey].in = d;
+        }
+      }
+      if (repo.type === 'clock_out') {
+        if (!days[dateKey].out || d > days[dateKey].out) {
+          days[dateKey].out = d;
+        }
+      }
     });
 
     const now = currentTime;
@@ -571,7 +579,7 @@ function App() {
       bio: user.bio || '',
       phone: user.phone || '',
       address: user.address || '',
-      birthday: user.birthday ? new Date(user.birthday).toISOString().substring(0, 10) : '',
+      birthday: safeISO(user.birthday),
       gender: user.gender || '-',
       maritalStatus: user.maritalStatus || '-'
     });
@@ -633,6 +641,16 @@ function App() {
     e.preventDefault();
     setIsSubmittingRequest(true);
     try {
+      if (selectedRequestType === 'Leave') {
+        const s = new Date(requestFormData.startDate);
+        const e = new Date(requestFormData.endDate);
+        const diff = Math.ceil(Math.abs(e - s) / (1000 * 60 * 60 * 24)) + 1;
+        if (diff > (user.leaveQuota || 0)) {
+          alert(`Maaf, jatah cuti Anda tidak mencukupi. Tersisa: ${user.leaveQuota || 0} hari, yang diminta: ${diff} hari.`);
+          setIsSubmittingRequest(false);
+          return;
+        }
+      }
       const res = await axios.post(`${API_URL}/api/requests`, {
         email: user.email,
         name: user.name,
@@ -642,7 +660,11 @@ function App() {
       if (res.data.success) {
         setShowRequestModal(false);
         fetchRequests();
-        setStatusMsg({ type: 'success', text: 'Permintaan berhasil dikirim!' });
+        // If it was a leave request, we might want to inform the user it needs approval to deduct quota
+        const successMsg = selectedRequestType === 'Leave' 
+          ? 'Permintaan cuti berhasil dikirim! Jatah akan dikurangi setelah disetujui.' 
+          : 'Permintaan berhasil dikirim!';
+        setStatusMsg({ type: 'success', text: successMsg });
         setTimeout(() => setStatusMsg(null), 3000);
       }
     } catch (err) { console.error('Submit error:', err); }
@@ -662,6 +684,9 @@ function App() {
 
   // Manage Employee Logic
   const handleEditEmployee = () => {
+    if (!selectedEmployee) return;
+    
+    // Always initialize from selectedEmployee which holds the current truth
     setEditEmployeeData({
       position: selectedEmployee.position || '',
       department: selectedEmployee.department || '',
@@ -669,7 +694,9 @@ function App() {
       employeeId: selectedEmployee.employeeId || '',
       employmentStatus: selectedEmployee.employmentStatus || 'Full-time',
       manager: selectedEmployee.manager || '',
-      teamMembers: selectedEmployee.teamMembers || []
+      teamMembers: [...(selectedEmployee.teamMembers || [])],
+      leaveQuota: selectedEmployee.leaveQuota || 0,
+      contractEnd: safeISO(selectedEmployee.contractEnd)
     });
     setIsEditingEmployee(true);
   };
@@ -689,24 +716,35 @@ function App() {
     setIsSavingEmployee(true);
     try {
       const res = await axios.put(`${API_URL}/api/employees/${selectedEmployee._id}`, editEmployeeData);
-      if (res.data.success) {
-        setSelectedEmployee(res.data.employee);
+        if (res.data.success && res.data.employee) {
+          const freshEmp = res.data.employee;
+          
+          // 1. Update global list first
+          setEmployees(prev => prev.map(e => e._id === freshEmp._id ? freshEmp : e));
+          
+          // 2. Update the currently viewed employee immediately
+          setSelectedEmployee(freshEmp);
 
-        // SYNC: Jika yang diedit adalah user yang sedang login, update global user state
-        if (selectedEmployee.email === user.email) {
-          setUser(prev => ({
-            ...prev,
-            ...res.data.employee,
-            picture: res.data.employee.profilePicture || prev.picture // Handle picture naming diff
-          }));
+          // 3. Update active user if they edited themselves
+          if (user && freshEmp.email === user.email) {
+            setUser(prev => ({ 
+              ...prev, 
+              ...freshEmp, 
+              picture: freshEmp.profilePicture || prev.picture 
+            }));
+          }
+
+          setIsEditingEmployee(false);
+          setStatusMsg({ type: 'success', text: `Data ${freshEmp.name} berhasil disinkronkan!` });
+          setTimeout(() => setStatusMsg(null), 3000);
+          
+          // Re-fetch to ensure everything is settled with the backend
+          fetchEmployees();
         }
-
-        fetchEmployees();
-        setIsEditingEmployee(false);
-        setStatusMsg({ type: 'success', text: 'Data karyawan & tim berhasil disinkronkan!' });
-        setTimeout(() => setStatusMsg(null), 3000);
-      }
-    } catch (err) { console.error('Error saving employee:', err); }
+    } catch (err) { 
+        console.error('Error saving employee:', err);
+        setStatusMsg({ type: 'error', text: 'Gagal menyimpan perubahan.' });
+    }
     finally { setIsSavingEmployee(false); }
   };
 
@@ -755,6 +793,17 @@ function App() {
   const formatDate = (date) => date.toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
   const formatTimestamp = (ts) => new Date(ts).toLocaleString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
   const getInitials = (name) => name ? name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) : 'U';
+  
+  // Safe Date string function to prevent "invalid time value" crashes
+  const safeISO = (dateVal) => {
+    if (!dateVal) return '';
+    try {
+      const d = new Date(dateVal);
+      if (isNaN(d.getTime())) return '';
+      return d.toISOString().substring(0, 10);
+    } catch { return ''; }
+  };
+
   const getGreeting = () => {
     const hr = currentTime.getHours();
     if (hr < 10) return 'Good Morning,';
@@ -785,26 +834,39 @@ function App() {
         allowance: editPayrollData.allowance,
         role: editPayrollData.role,
         bankAccount: editPayrollData.bankAccount,
-        payrollStatus: editPayrollData.payrollStatus
+        payrollStatus: editPayrollData.payrollStatus,
+        leaveQuota: editPayrollData.leaveQuota,
+        contractEnd: editPayrollData.contractEnd
       });
-      if (res.data.success) {
-        setIsEditingPayroll(false);
-        fetchEmployees();
-        // Sync with own profile if editing self
-        if (editPayrollData.id === user.id || editPayrollData.id === user._id) {
-          setUser(prev => ({
-            ...prev,
-            baseSalary: editPayrollData.baseSalary,
-            allowance: editPayrollData.allowance,
-            role: editPayrollData.role,
-            bankAccount: editPayrollData.bankAccount,
-            payrollStatus: editPayrollData.payrollStatus
-          }));
+      
+      if (res.data.success && res.data.employee) {
+        const freshEmp = res.data.employee;
+        
+        // ULTIMATE SYNC: Refresh all state sources immediately
+        // 1. Update list
+        setEmployees(prev => prev.map(e => e._id === freshEmp._id ? freshEmp : e));
+
+        // 2. Update self if applicable
+        if (user && freshEmp.email === user.email) {
+          setUser(prev => ({ ...prev, ...freshEmp, picture: freshEmp.profilePicture || prev.picture }));
         }
-        setStatusMsg({ type: 'success', text: 'Payroll & Role berhasil diperbarui!' });
+
+        // 3. Update the targeted employee detail view
+        if (selectedEmployee && (freshEmp._id === selectedEmployee._id)) {
+          setSelectedEmployee(freshEmp);
+        }
+
+        setIsEditingPayroll(false);
+        setStatusMsg({ type: 'success', text: `Payroll & Kontrak ${freshEmp.name} berhasil diperbarui!` });
         setTimeout(() => setStatusMsg(null), 3000);
+        
+        // Final settled fetch
+        fetchEmployees();
       }
-    } catch (err) { console.error('Error saving payroll:', err); }
+    } catch (err) { 
+        console.error('Error saving payroll:', err);
+        setStatusMsg({ type: 'error', text: 'Gagal memperbarui payroll.' });
+    }
     finally { setIsSavingPayroll(false); }
   };
 
@@ -1138,7 +1200,15 @@ function App() {
               <div className="profile-header-top">
                 {user.picture ? <img className="profile-header-avatar" src={user.picture} alt="" referrerPolicy="no-referrer" /> : <div className="profile-header-avatar-placeholder">{getInitials(user.name)}</div>}
                 <div className="profile-header-main">
-                  <h3>{user.name}</h3>
+                  <div className="profile-name-group">
+                    <h3>{user.name}</h3>
+                    {user.contractEnd && (
+                      <span className="employee-card-contract">
+                        <span className="material-icons-outlined">event_busy</span>
+                        {new Date(user.contractEnd) < new Date() ? 'EXPIRED' : `Valid thru ${new Date(user.contractEnd).toLocaleDateString()}`}
+                      </span>
+                    )}
+                  </div>
                   <p>{user.position || 'Employee'} • {user.department || 'General'}</p>
                 </div>
                 <button className="profile-edit-btn" onClick={handleStartEdit}>
@@ -1167,6 +1237,8 @@ function App() {
                     <div className="profile-info-item"><span className="profile-info-label">Gender</span><span className="profile-info-value">{user.gender || '-'}</span></div>
                     <div className="profile-info-item"><span className="profile-info-label">Marital Status</span><span className="profile-info-value">{user.maritalStatus || '-'}</span></div>
                     <div className="profile-info-item"><span className="profile-info-label">Birthday</span><span className="profile-info-value">{user.birthday ? new Date(user.birthday).toLocaleDateString() : '-'}</span></div>
+                    <div className="profile-info-item"><span className="profile-info-label">Contract End</span><span className="profile-info-value" style={{ fontWeight: '700', color: (user.contractEnd && new Date(user.contractEnd) < new Date()) ? '#ef4444' : '#1e293b' }}>{user.contractEnd ? new Date(user.contractEnd).toLocaleDateString() : 'Permanent'}</span></div>
+                    <div className="profile-info-item"><span className="profile-info-label">Leave Quota</span><span className="profile-info-value" style={{ fontWeight: '700', color: '#2563eb' }}>{user.leaveQuota || 0} Days</span></div>
                     <div className="profile-info-item"><span className="profile-info-label">Address</span><span className="profile-info-value">{user.address || '-'}</span></div>
                   </div>
                 </div>
@@ -1178,7 +1250,12 @@ function App() {
                     <div className="profile-info-item"><span className="profile-info-label">Employee ID</span><span className="badge-id">{user.employeeId || `EMS-${user._id?.substring(0, 4).toUpperCase() || 'NEW'}`}</span></div>
                     <div className="profile-info-item"><span className="profile-info-label">Employment Status</span><span className="profile-info-value">{user.employmentStatus || 'Probation'}</span></div>
                     <div className="profile-info-item"><span className="profile-info-label">Join Date</span><span className="profile-info-value">{user.joinDate ? new Date(user.joinDate).toLocaleDateString() : '-'}</span></div>
-                    <div className="profile-info-item"><span className="profile-info-label">Contract End</span><span className="profile-info-value">{user.contractEnd ? new Date(user.contractEnd).toLocaleDateString() : 'Permanent'}</span></div>
+                    <div className="profile-info-item">
+                      <span className="profile-info-label">Contract End</span>
+                      <span className="profile-info-value" style={{ fontWeight: '700', color: (user.contractEnd && new Date(user.contractEnd) < new Date()) ? '#ef4444' : '#1e293b' }}>
+                        {user.contractEnd ? new Date(user.contractEnd).toLocaleDateString() : (user.employmentStatus === 'Contract' ? 'Date Not Set' : 'Permanent')}
+                      </span>
+                    </div>
                   </div>
                 </div>
               )}
@@ -1219,7 +1296,12 @@ function App() {
                 {employeesLoading ? <div className="loading-center"><div className="loading-spinner"></div><p>Memuat data karyawan...</p></div> : (
                   <div className="employee-grid">
                     {employees.filter(e => e.name.toLowerCase().includes(searchQuery.toLowerCase()) || e.position.toLowerCase().includes(searchQuery.toLowerCase())).map(emp => (
-                      <div key={emp._id} className="employee-card" onClick={() => setSelectedEmployee(emp)} style={{ cursor: 'pointer' }}>
+                      <div 
+                        key={emp._id} 
+                        className={`employee-card ${user?.role === 'employee' ? 'restricted-card' : ''}`}
+                        onClick={() => user?.role !== 'employee' && setSelectedEmployee(emp)} 
+                        style={{ cursor: user?.role === 'employee' ? 'default' : 'pointer' }}
+                      >
                         <div className="employee-card-avatar">{emp.profilePicture ? <img src={emp.profilePicture} alt="" /> : <div className="employee-avatar-initials">{getInitials(emp.name)}</div>}</div>
                         <div className="employee-card-info">
                           <h4>{emp.name}</h4>
@@ -1227,6 +1309,11 @@ function App() {
                           <div className="employee-card-details">
                             <span className="employee-card-dept"><span className="material-icons-outlined">apartment</span>{emp.department || 'General'}</span>
                             <span className="employee-card-id"><span className="material-icons-outlined">badge</span>{emp.employeeId || `EMS-${emp._id?.substring(0, 4).toUpperCase() || 'NEW'}`}</span>
+                            {emp.contractEnd && user?.role !== 'employee' && (
+                              <span className="employee-card-contract" style={{ color: new Date(emp.contractEnd) < new Date() ? '#ef4444' : '#64748b' }}>
+                                <span className="material-icons-outlined">event_busy</span>{new Date(emp.contractEnd).toLocaleDateString()}
+                              </span>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -1253,6 +1340,12 @@ function App() {
                     <div className="profile-header-main">
                       <h3>{selectedEmployee.name}</h3>
                       <p>{selectedEmployee.position || 'Employee'} • {selectedEmployee.department || 'General'}</p>
+                      {selectedEmployee.contractEnd && (
+                        <span style={{ fontSize: '11px', background: '#f1f5f9', padding: '4px 10px', borderRadius: '20px', color: '#64748b', display: 'inline-flex', alignItems: 'center', gap: '4px', marginTop: '6px' }}>
+                          <span className="material-icons-outlined" style={{ fontSize: '14px' }}>event_busy</span> 
+                          Contract End: {new Date(selectedEmployee.contractEnd).toLocaleDateString()}
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div className="profile-header-tabs">
@@ -1286,6 +1379,8 @@ function App() {
                         <div className="profile-info-item"><span className="profile-info-label">Gender</span><span className="profile-info-value">{selectedEmployee.gender || '-'}</span></div>
                         <div className="profile-info-item"><span className="profile-info-label">Marital Status</span><span className="profile-info-value">{selectedEmployee.maritalStatus || '-'}</span></div>
                         <div className="profile-info-item"><span className="profile-info-label">Birthday</span><span className="profile-info-value">{selectedEmployee.birthday ? new Date(selectedEmployee.birthday).toLocaleDateString() : '-'}</span></div>
+                      <div className="profile-info-item"><span className="profile-info-label">Contract End</span><span className="profile-info-value" style={{ fontWeight: '700', color: (selectedEmployee.contractEnd && new Date(selectedEmployee.contractEnd) < new Date()) ? '#ef4444' : '#1e293b' }}>{selectedEmployee.contractEnd ? new Date(selectedEmployee.contractEnd).toLocaleDateString() : 'Permanent'}</span></div>
+                        <div className="profile-info-item"><span className="profile-info-label">Leave Quota</span><span className="profile-info-value" style={{ fontWeight: '700', color: '#2563eb' }}>{selectedEmployee.leaveQuota || 0} Days</span></div>
                         <div className="profile-info-item"><span className="profile-info-label">Address</span><span className="profile-info-value">{selectedEmployee.address || '-'}</span></div>
                       </div>
                     </div>
@@ -1297,7 +1392,12 @@ function App() {
                         <div className="profile-info-item"><span className="profile-info-label">Employee ID</span><span className="badge-id">{selectedEmployee.employeeId || `EMS-${selectedEmployee._id?.substring(0, 4).toUpperCase() || 'NEW'}`}</span></div>
                         <div className="profile-info-item"><span className="profile-info-label">Employment Status</span><span className="profile-info-value">{selectedEmployee.employmentStatus || 'Full-time'}</span></div>
                         <div className="profile-info-item"><span className="profile-info-label">Join Date</span><span className="profile-info-value">{selectedEmployee.joinDate ? new Date(selectedEmployee.joinDate).toLocaleDateString() : '-'}</span></div>
-                        <div className="profile-info-item"><span className="profile-info-label">Contract End</span><span className="profile-info-value">{selectedEmployee.contractEnd ? new Date(selectedEmployee.contractEnd).toLocaleDateString() : 'Permanent'}</span></div>
+                        <div className="profile-info-item">
+                          <span className="profile-info-label">Contract End</span>
+                          <span className="profile-info-value" style={{ fontWeight: '700', color: (selectedEmployee.contractEnd && new Date(selectedEmployee.contractEnd) < new Date()) ? '#ef4444' : '#1e293b' }}>
+                            {selectedEmployee.contractEnd ? new Date(selectedEmployee.contractEnd).toLocaleDateString() : (selectedEmployee.employmentStatus === 'Contract' ? 'Date Not Set' : 'Permanent')}
+                          </span>
+                        </div>
                       </div>
                     </div>
                   )}
@@ -1468,44 +1568,43 @@ function App() {
                     <table className="request-table">
                       <thead>
                         <tr>
-                          <th>Karyawan</th>
-                          <th>No Rekening</th>
-                          <th>Gaji Pokok</th>
-                          <th>Tunjangan</th>
-                          <th>Total</th>
+                          <th>Karyawan & Rekening</th>
+                          <th>Total Gaji (Net)</th>
                           <th>Status</th>
-                          <th>Aksi</th>
+                          <th style={{ textAlign: 'right' }}>Aksi</th>
                         </tr>
                       </thead>
                       <tbody>
                         {employees.filter(e => e.name.toLowerCase().includes(searchQuery.toLowerCase())).map(emp => (
                           <tr key={emp._id}>
                             <td>
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: '160px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                                 {emp.picture ? (
                                   <img className="member-avatar-mini" src={emp.picture} alt="" style={{ objectFit: 'cover' }} referrerPolicy="no-referrer" />
                                 ) : (
                                   <div className="member-avatar-mini">{getInitials(emp.name)}</div>
                                 )}
                                 <div>
-                                  <div style={{ fontWeight: '600', fontSize: '13px', whiteSpace: 'nowrap' }}>{emp.name}</div>
-                                  <div style={{ fontSize: '11px', color: '#64748b' }}>{emp.position}</div>
+                                  <div style={{ fontWeight: '600', fontSize: '13px' }}>{emp.name}</div>
+                                  <div style={{ fontSize: '11px', color: '#64748b' }}>{emp.position} • {emp.bankAccount || '-'}</div>
                                 </div>
                               </div>
                             </td>
                             <td>
-                              <div style={{ fontSize: '12px', fontWeight: '500', color: '#475569' }}>{emp.bankAccount || '-'}</div>
+                              <div style={{ fontWeight: '700', color: '#2563eb', fontSize: '14px' }}>
+                                {formatCurrency((emp.baseSalary || 5000000) + (emp.allowance || 0))}
+                              </div>
+                              <div style={{ fontSize: '10px', color: '#94a3b8' }}>
+                                Gapok: {formatCurrency(emp.baseSalary || 5000000)}
+                              </div>
                             </td>
-                            <td>{formatCurrency(emp.baseSalary || 5000000)}</td>
-                            <td>{formatCurrency(emp.allowance || 0)}</td>
-                            <td style={{ fontWeight: '700', color: '#2563eb' }}>{formatCurrency((emp.baseSalary || 5000000) + (emp.allowance || 0))}</td>
                             <td>
-                              <span className={`payroll-status-badge ${emp.payrollStatus === 'Paid' ? 'paid' : 'unpaid'}`}>
+                              <span className={`payroll-status-badge ${emp.payrollStatus === 'Paid' ? 'paid' : 'unpaid'}`} style={{ padding: '4px 8px', fontSize: '10px' }}>
                                 {emp.payrollStatus === 'Paid' ? 'PAID' : 'UNPAID'}
                               </span>
                             </td>
-                            <td>
-                              <button className="btn-edit-payroll" onClick={() => {
+                            <td style={{ textAlign: 'right' }}>
+                              <button className="btn-edit-payroll" style={{ padding: '6px 12px', fontSize: '12px' }} onClick={() => {
                                 setEditPayrollData({
                                   id: emp._id,
                                   name: emp.name,
@@ -1513,11 +1612,13 @@ function App() {
                                   allowance: emp.allowance || 0,
                                   role: emp.role || 'employee',
                                   bankAccount: emp.bankAccount || '-',
-                                  payrollStatus: emp.payrollStatus || 'Unpaid'
+                                  payrollStatus: emp.payrollStatus || 'Unpaid',
+                                  leaveQuota: emp.leaveQuota || 0,
+                                  contractEnd: safeISO(emp.contractEnd)
                                 });
                                 setIsEditingPayroll(true);
                               }}>
-                                <span className="material-icons-outlined">edit</span> Edit
+                                <span className="material-icons-outlined" style={{ fontSize: '16px' }}>edit</span>
                               </button>
                             </td>
                           </tr>
@@ -1869,7 +1970,7 @@ function App() {
                           <div className="progress-bar-mini">
                             <div className="progress-fill" style={{ width: `${Math.min(100, report.attendanceRate)}%`, background: parseInt(report.attendanceRate) > 80 ? '#10b981' : '#f59e0b' }}></div>
                           </div>
-                          <span style={{ fontSize: '11px', fontWeight: 'bold' }}>{report.attendanceRate}%</span>
+                          <span className="work-rate-text">{report.attendanceRate}%</span>
                         </td>
                       </tr>
                     ))}
@@ -1892,28 +1993,58 @@ function App() {
           <div className="modal-content animate-fadeInUp">
             <div className="modal-header"><h3>Edit Information</h3><button className="modal-close" onClick={() => setIsEditingProfile(false)}><span className="material-icons-outlined">close</span></button></div>
             <form onSubmit={handleSaveProfile} className="edit-profile-form">
-              <div className="form-group"><label>Name</label><input name="name" value={editFormData.name} onChange={handleEditChange} required /></div>
-              <div className="form-group"><label>Bio</label><textarea name="bio" value={editFormData.bio} onChange={handleEditChange} maxLength="250" rows="3"></textarea></div>
+              <div className="form-group">
+                <label>Full Name</label>
+                <input name="name" value={editFormData.name} onChange={handleEditChange} required placeholder="Enter your full name" />
+              </div>
+              
               <div className="form-row">
-                <div className="form-group"><label>Phone</label><input name="phone" value={editFormData.phone} onChange={handleEditChange} /></div>
-                <div className="form-group"><label>Gender</label>
+                <div className="form-group">
+                  <label>Phone Number</label>
+                  <input name="phone" value={editFormData.phone} onChange={handleEditChange} placeholder="+62..." />
+                </div>
+                <div className="form-group">
+                  <label>Gender</label>
                   <select name="gender" value={editFormData.gender} onChange={handleEditChange}>
-                    <option value="-">-</option><option value="Male">Male</option><option value="Female">Female</option><option value="Other">Other</option>
+                    <option value="-">- Select -</option>
+                    <option value="Male">Male</option>
+                    <option value="Female">Female</option>
+                    <option value="Other">Other</option>
                   </select>
                 </div>
               </div>
+
               <div className="form-row">
-                <div className="form-group"><label>Birthday</label><input type="date" name="birthday" value={editFormData.birthday} onChange={handleEditChange} /></div>
-                <div className="form-group"><label>Marital Status</label>
+                <div className="form-group">
+                  <label>Birthday</label>
+                  <input type="date" name="birthday" value={editFormData.birthday} onChange={handleEditChange} />
+                </div>
+                <div className="form-group">
+                  <label>Marital Status</label>
                   <select name="maritalStatus" value={editFormData.maritalStatus} onChange={handleEditChange}>
-                    <option value="-">-</option><option value="Single">Single</option><option value="Married">Married</option><option value="Divorced">Divorced</option>
+                    <option value="-">- Select -</option>
+                    <option value="Single">Single</option>
+                    <option value="Married">Married</option>
+                    <option value="Divorced">Divorced</option>
                   </select>
                 </div>
               </div>
-              <div className="form-group"><label>Address</label><textarea name="address" value={editFormData.address} onChange={handleEditChange} rows="2"></textarea></div>
+
+              <div className="form-group">
+                <label>Bio (Short Description)</label>
+                <textarea name="bio" value={editFormData.bio} onChange={handleEditChange} maxLength="250" rows="2" placeholder="Tell us a bit about yourself..."></textarea>
+              </div>
+
+              <div className="form-group">
+                <label>Current Address</label>
+                <textarea name="address" value={editFormData.address} onChange={handleEditChange} rows="2" placeholder="Your current living address..."></textarea>
+              </div>
+
               <div className="modal-footer">
                 <button type="button" className="btn-cancel" onClick={() => setIsEditingProfile(false)}>Cancel</button>
-                <button type="submit" className="btn-save" disabled={isSavingProfile}>{isSavingProfile ? <div className="loading-spinner"></div> : 'Save Changes'}</button>
+                <button type="submit" className="btn-save" disabled={isSavingProfile}>
+                  {isSavingProfile ? <div className="loading-spinner"></div> : 'Save Profile'}
+                </button>
               </div>
             </form>
           </div>
@@ -1925,12 +2056,33 @@ function App() {
           <div className="modal-content animate-fadeInUp">
             <div className="modal-header"><h3>New {selectedRequestType} Request</h3><button className="modal-close" onClick={() => setShowRequestModal(false)}><span className="material-icons-outlined">close</span></button></div>
             <form onSubmit={handleRequestSubmit} className="request-form">
+              {selectedRequestType === 'Leave' && (
+                <div className="quota-display" style={{ padding: '12px', background: '#eff6ff', borderRadius: '12px', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <span className="material-icons-outlined" style={{ color: '#3b82f6' }}>event_note</span>
+                  <div>
+                    <div style={{ fontSize: '13px', fontWeight: '600', color: '#1e40af' }}>Jatah Cuti Tersisa: {user.leaveQuota || 0} Hari</div>
+                    <div style={{ fontSize: '11px', color: '#60a5fa' }}>Gunakan jatah cuti tahunan Anda dengan bijak.</div>
+                  </div>
+                </div>
+              )}
               <div className="form-row">
                 <div className="form-group"><label>Start Date</label><input type="date" required value={requestFormData.startDate} onChange={e => setRequestFormData({ ...requestFormData, startDate: e.target.value })} /></div>
                 {['Leave', 'Sick', 'Permit'].includes(selectedRequestType) && (
                   <div className="form-group"><label>End Date</label><input type="date" value={requestFormData.endDate} onChange={e => setRequestFormData({ ...requestFormData, endDate: e.target.value })} /></div>
                 )}
               </div>
+              {['Leave', 'Sick', 'Permit'].includes(selectedRequestType) && requestFormData.startDate && requestFormData.endDate && (
+                <div style={{ marginBottom: '16px', fontSize: '13px', color: '#64748b', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  <span className="material-icons-outlined" style={{ fontSize: '16px' }}>info</span>
+                  Durasi: <strong>{(() => {
+                    const s = new Date(requestFormData.startDate);
+                    const e = new Date(requestFormData.endDate);
+                    if (isNaN(s) || isNaN(e)) return 0;
+                    const diff = Math.ceil(Math.abs(e - s) / (1000 * 60 * 60 * 24)) + 1;
+                    return diff;
+                  })()} Hari</strong>
+                </div>
+              )}
               {['Reimbursement', 'Expense'].includes(selectedRequestType) && (
                 <div className="form-group"><label>Amount</label><input type="number" required placeholder="0" value={requestFormData.amount} onChange={e => setRequestFormData({ ...requestFormData, amount: e.target.value })} /></div>
               )}
@@ -1956,17 +2108,18 @@ function App() {
             <form onSubmit={handleSaveEmployee} className="edit-profile-form">
               <div className="form-row">
                 <div className="form-group">
-                  <label>Position</label>
-                  <input value={editEmployeeData.position} onChange={e => setEditEmployeeData({ ...editEmployeeData, position: e.target.value })} required />
+                  <label>Professional Position</label>
+                  <input value={editEmployeeData.position} onChange={e => setEditEmployeeData({ ...editEmployeeData, position: e.target.value })} required placeholder="e.g. Software Engineer" />
                 </div>
                 <div className="form-group">
                   <label>Department</label>
-                  <input value={editEmployeeData.department} onChange={e => setEditEmployeeData({ ...editEmployeeData, department: e.target.value })} required />
+                  <input value={editEmployeeData.department} onChange={e => setEditEmployeeData({ ...editEmployeeData, department: e.target.value })} required placeholder="e.g. Engineering" />
                 </div>
               </div>
+
               <div className="form-row">
                 <div className="form-group">
-                  <label>Role</label>
+                  <label>Employee Role</label>
                   <select value={editEmployeeData.role} onChange={e => setEditEmployeeData({ ...editEmployeeData, role: e.target.value })}>
                     <option value="employee">Employee</option>
                     <option value="hrd">HRD</option>
@@ -1983,77 +2136,77 @@ function App() {
                   </select>
                 </div>
               </div>
+
               <div className="form-row">
                 <div className="form-group">
                   <label>Employee ID</label>
                   <input value={editEmployeeData.employeeId} onChange={e => setEditEmployeeData({ ...editEmployeeData, employeeId: e.target.value })} required />
                 </div>
                 <div className="form-group">
-                  <label>Manager / Supervisor</label>
-                  <select
-                    value={editEmployeeData.manager}
-                    onChange={e => setEditEmployeeData({ ...editEmployeeData, manager: e.target.value })}
-                  >
-                    <option value="">No Manager / Higher Level</option>
-                    {employees
-                      .filter(emp => emp.email !== selectedEmployee.email) // Cant manage self
-                      .map(emp => (
-                        <option key={emp.email} value={emp.name}>{emp.name}</option>
-                      ))
-                    }
+                  <label>Reporting Manager</label>
+                  <select value={editEmployeeData.manager} onChange={e => setEditEmployeeData({ ...editEmployeeData, manager: e.target.value })}>
+                    <option value="">(None)</option>
+                    {employees.filter(emp => emp.email !== selectedEmployee.email).map(emp => (
+                      <option key={emp.email} value={emp.name}>{emp.name}</option>
+                    ))}
                   </select>
                 </div>
               </div>
 
-              {/* Team Members Management Section */}
-              <div className="form-group" style={{ marginTop: '16px', padding: '16px', background: '#f8fafc', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '12px', color: '#1e293b' }}>
-                  <span className="material-icons-outlined" style={{ fontSize: '18px' }}>groups</span>
-                  Manage Team Members
-                </label>
+              <div className="form-row">
+                <div className="form-group">
+                  <label>Leave Quota (Annual)</label>
+                  <input type="number" value={editEmployeeData.leaveQuota} onChange={e => setEditEmployeeData({ ...editEmployeeData, leaveQuota: Number(e.target.value) })} min="0" required />
+                </div>
+                <div className="form-group">
+                  <label>Contract End Date</label>
+                  <input type="date" value={editEmployeeData.contractEnd} onChange={e => setEditEmployeeData({ ...editEmployeeData, contractEnd: e.target.value })} />
+                </div>
+              </div>
 
-                <div className="team-edit-list" style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '12px' }}>
+              {/* Minimalist Team Management */}
+              <div style={{ marginTop: '16px', padding: '14px', background: '#f8fafc', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                  <span style={{ fontSize: '13px', fontWeight: '600', color: '#475569', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span className="material-icons-outlined" style={{ fontSize: '16px' }}>groups</span> Team Members
+                  </span>
+                  <span style={{ fontSize: '11px', color: '#94a3b8' }}>{editEmployeeData.teamMembers.length} Person(s)</span>
+                </div>
+
+                <div className="team-edit-list" style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '12px' }}>
                   {editEmployeeData.teamMembers.length === 0 ? (
-                    <p style={{ fontSize: '12px', color: '#64748b', margin: '4px 0' }}>No team members assigned yet.</p>
+                    <p style={{ fontSize: '11px', color: '#94a3b8', fontStyle: 'italic' }}>No members assigned</p>
                   ) : (
                     editEmployeeData.teamMembers.map((m, idx) => (
-                      <div key={m.email || idx} className="team-edit-tag" style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 10px', background: 'white', border: '1px solid #cbd5e1', borderRadius: '20px', fontSize: '12px', fontWeight: '500' }}>
+                      <div key={m.email || idx} style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '3px 8px', background: 'white', border: '1px solid #e2e8f0', borderRadius: '4px', fontSize: '11px' }}>
                         <span>{m.name || m.n}</span>
-                        <button type="button" onClick={() => handleRemoveTeamMember(m.email)} style={{ border: 'none', background: 'none', padding: 0, display: 'flex', color: '#ef4444', cursor: 'pointer' }}>
-                          <span className="material-icons-outlined" style={{ fontSize: '14px' }}>cancel</span>
+                        <button type="button" onClick={() => handleRemoveTeamMember(m.email)} style={{ border: 'none', background: 'none', padding: 0, color: '#94a3b8', cursor: 'pointer' }}>
+                          <span className="material-icons-outlined" style={{ fontSize: '12px' }}>close</span>
                         </button>
                       </div>
                     ))
                   )}
                 </div>
 
-                <div className="team-add-controls">
-                  <select
-                    style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px' }}
-                    onChange={(e) => {
-                      if (e.target.value) {
-                        const emp = employees.find(emp => emp.email === e.target.value);
-                        if (emp) handleAddTeamMember(emp);
-                        e.target.value = ''; // Reset select
-                      }
-                    }}
-                  >
-                    <option value="">+ Add Team Member...</option>
-                    {employees
-                      .filter(emp => emp.email !== selectedEmployee.email && !editEmployeeData.teamMembers.find(m => m.email === emp.email))
-                      .map(emp => (
-                        <option key={emp.email} value={emp.email}>{emp.name} ({emp.position})</option>
-                      ))
+                <select
+                  style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid #e2e8f0', fontSize: '12px', color: '#475569' }}
+                  onChange={(e) => {
+                    if (e.target.value) {
+                      const emp = employees.find(emp => emp.email === e.target.value);
+                      if (emp) handleAddTeamMember(emp);
+                      e.target.value = '';
                     }
-                  </select>
-                </div>
+                  }}
+                >
+                  <option value="">+ Add Member...</option>
+                  {employees.filter(emp => emp.email !== selectedEmployee.email && !editEmployeeData.teamMembers.find(m => m.email === emp.email)).map(emp => (
+                    <option key={emp.email} value={emp.email}>{emp.name}</option>
+                  ))}
+                </select>
               </div>
 
-              <div className="modal-footer">
-                <button type="button" className="btn-delete" onClick={handleDeleteEmployee} style={{ marginRight: 'auto', background: '#fee2e2', color: '#ef4444', padding: '8px 16px', borderRadius: '8px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                  <span className="material-icons-outlined" style={{ fontSize: '18px' }}>delete</span>
-                  Delete
-                </button>
+              <div className="modal-footer" style={{ marginTop: '20px' }}>
+                <button type="button" className="btn-delete" onClick={handleDeleteEmployee} style={{ marginRight: 'auto', background: '#fff1f2', color: '#e11d48', border: 'none', padding: '8px 12px', borderRadius: '8px', fontSize: '12px', fontWeight: '500' }}>Delete Karyawan</button>
                 <button type="button" className="btn-cancel" onClick={() => setIsEditingEmployee(false)}>Cancel</button>
                 <button type="submit" className="btn-save" disabled={isSavingEmployee}>
                   {isSavingEmployee ? <div className="loading-spinner"></div> : 'Save Changes'}
@@ -2155,36 +2308,34 @@ function App() {
               </button>
             </div>
             <form onSubmit={handleSavePayroll} className="edit-profile-form">
-              <div className="form-group">
-                <label>Basic Salary (IDR)</label>
-                <input type="number" value={editPayrollData.baseSalary} onChange={e => setEditPayrollData({ ...editPayrollData, baseSalary: Number(e.target.value) })} min="0" required />
+              <div className="form-row">
+                <div className="form-group">
+                  <label>Basic Salary (IDR)</label>
+                  <input type="number" value={editPayrollData.baseSalary} onChange={e => setEditPayrollData({ ...editPayrollData, baseSalary: Number(e.target.value) })} min="0" required />
+                </div>
+                <div className="form-group">
+                  <label>Allowance / Bonus (IDR)</label>
+                  <input type="number" value={editPayrollData.allowance} onChange={e => setEditPayrollData({ ...editPayrollData, allowance: Number(e.target.value) })} min="0" required />
+                </div>
               </div>
-              <div className="form-group">
-                <label>Allowance / Bonus (IDR)</label>
-                <input type="number" value={editPayrollData.allowance} onChange={e => setEditPayrollData({ ...editPayrollData, allowance: Number(e.target.value) })} min="0" required />
+              
+              <div className="form-row">
+                <div className="form-group">
+                  <label>Payroll Status</label>
+                  <select value={editPayrollData.payrollStatus} onChange={e => setEditPayrollData({ ...editPayrollData, payrollStatus: e.target.value })} required>
+                    <option value="Unpaid">Unpaid</option>
+                    <option value="Paid">Paid</option>
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label>Bank Account Number</label>
+                  <input value={editPayrollData.bankAccount} onChange={e => setEditPayrollData({ ...editPayrollData, bankAccount: e.target.value })} placeholder="e.g. BCA 12345678" />
+                </div>
               </div>
-              <div className="form-group">
-                <label>Employee Role</label>
-                <select value={editPayrollData.role} onChange={e => setEditPayrollData({ ...editPayrollData, role: e.target.value })} required>
-                  <option value="employee">Employee</option>
-                  <option value="hrd">HRD</option>
-                  <option value="manager">Manager</option>
-                  <option value="admin">Admin</option>
-                </select>
-              </div>
-              <div className="form-group">
-                <label>Bank Account Number</label>
-                <input value={editPayrollData.bankAccount} onChange={e => setEditPayrollData({ ...editPayrollData, bankAccount: e.target.value })} placeholder="e.g. BCA 12345678" />
-              </div>
-              <div className="form-group">
-                <label>Payroll Status</label>
-                <select value={editPayrollData.payrollStatus} onChange={e => setEditPayrollData({ ...editPayrollData, payrollStatus: e.target.value })} required>
-                  <option value="Unpaid">Unpaid</option>
-                  <option value="Paid">Paid</option>
-                </select>
-              </div>
-              <p style={{ fontSize: '12px', color: '#64748b', marginTop: '4px' }}>
-                💡 Total THP: {formatCurrency(editPayrollData.baseSalary + editPayrollData.allowance)}
+
+
+              <p style={{ fontSize: '11px', color: '#64748b', marginTop: '4px', background: '#f8fafc', padding: '8px 12px', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+                💡 <strong>Total THP:</strong> {formatCurrency(editPayrollData.baseSalary + editPayrollData.allowance)}
               </p>
               <div className="modal-footer">
                 <button type="button" className="btn-cancel" onClick={() => setIsEditingPayroll(false)}>Cancel</button>

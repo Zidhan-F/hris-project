@@ -14,5 +14,5 @@ COPY . .
 # Expose port
 EXPOSE 5000
 
-# Start application in production mode
-CMD ["npm", "start"]
+# Start application with nodemon for hot-reload in development
+CMD ["npm", "run", "dev"]

@@ -28,6 +28,7 @@ const userSchema = new mongoose.Schema({
   allowance: { type: Number, default: 0 },
   bankAccount: { type: String, default: '-' },
   payrollStatus: { type: String, enum: ['Unpaid', 'Paid'], default: 'Unpaid' },
+  leaveQuota: { type: Number, default: 12 },
   createdAt: { type: Date, default: Date.now }
 });
 

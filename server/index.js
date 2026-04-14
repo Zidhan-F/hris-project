@@ -97,7 +97,8 @@ app.post('/api/auth/google', async (req, res) => {
                     baseSalary: 5000000,
                     allowance: 0,
                     bankAccount: '-',
-                    payrollStatus: 'Unpaid'
+                    payrollStatus: 'Unpaid',
+                    leaveQuota: 12
                 }
             },
             { upsert: true, new: true, setDefaultsOnInsert: true }
@@ -131,7 +132,8 @@ app.post('/api/auth/google', async (req, res) => {
                 baseSalary: user.baseSalary,
                 allowance: user.allowance,
                 bankAccount: user.bankAccount,
-                payrollStatus: user.payrollStatus
+                payrollStatus: user.payrollStatus,
+                leaveQuota: user.leaveQuota
             }
         });
 
@@ -223,9 +225,9 @@ app.get('/api/attendance/history', async (req, res) => {
 // ============================================================
 app.get('/api/attendance/summary/today', async (req, res) => {
     try {
-        const today = new Date();
-        const start = new Date(today.setHours(0, 0, 0, 0));
-        const end = new Date(today.setHours(23, 59, 59, 999));
+        const jakartaDateStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Jakarta' }); // YYYY-MM-DD
+        const start = new Date(`${jakartaDateStr}T00:00:00.000+07:00`);
+        const end = new Date(`${jakartaDateStr}T23:59:59.999+07:00`);
 
         // 1. Total Karyawan Terdaftar
         const totalStaff = await User.countDocuments({});
@@ -246,13 +248,29 @@ app.get('/api/attendance/summary/today', async (req, res) => {
         const isBefore7PM = new Date().getHours() < 19;
         const presentCount = Object.values(usersAttendance).filter(u => u.in && (u.out || isBefore7PM)).length;
 
-        // 3. Karyawan Terlambat (Absen Masuk >= 09:30 AM)
-        const lateThreshold = new Date(new Date().setHours(9, 30, 0, 0));
-        const lateRecords = await Attendance.distinct('email', {
-            type: 'clock_in',
-            timestamp: { $gte: lateThreshold } // Jika jam >= 9:30 hari ini
+        // 3. Karyawan Terlambat (Absen Masuk Pertama > 09:30 AM)
+        const lateThresholdMinutes = 9 * 60 + 30; // 09:30
+        
+        // Group by user to find their first clock_in today
+        const userFirstIn = {};
+        todayRecords.forEach(r => {
+            if (r.type === 'clock_in') {
+                if (!userFirstIn[r.email] || new Date(r.timestamp) < new Date(userFirstIn[r.email])) {
+                    userFirstIn[r.email] = r.timestamp;
+                }
+            }
         });
-        const lateCount = lateRecords.length;
+
+        const lateCount = Object.values(userFirstIn).filter(time => {
+            const d = new Date(time);
+            // Gunakan format Jakarta (GMT+7) agar konsisten meskipun server di UTC
+            const jakartaTime = d.toLocaleString('en-US', { timeZone: 'Asia/Jakarta', hour12: false });
+            // Format toLocaleString biasanya: "MM/DD/YYYY, HH:mm:ss"
+            const timePart = jakartaTime.split(', ')[1];
+            if (!timePart) return false;
+            const [h, m] = timePart.split(':').map(Number);
+            return (h * 60 + m) > lateThresholdMinutes;
+        }).length;
 
         res.status(200).json({
             success: true,
@@ -288,25 +306,34 @@ app.get('/api/attendance/summary/monthly', async (req, res) => {
         const reports = users.map(user => {
             const userAtt = attendance.filter(a => a.email.toLowerCase() === user.email.toLowerCase());
             
-            // Group by date
+            // Group by date (Jakarta Time)
             const days = {};
             userAtt.forEach(a => {
-                const dKey = new Date(a.timestamp).toDateString();
+                const d = new Date(a.timestamp);
+                const dKey = d.toLocaleDateString('en-CA', { timeZone: 'Asia/Jakarta' }); // YYYY-MM-DD
                 if (!days[dKey]) days[dKey] = { in: null, out: null };
-                if (a.type === 'clock_in') days[dKey].in = a.timestamp;
-                if (a.type === 'clock_out') days[dKey].out = a.timestamp;
+                if (a.type === 'clock_in') {
+                    if (!days[dKey].in || new Date(a.timestamp) < new Date(days[dKey].in)) {
+                        days[dKey].in = a.timestamp;
+                    }
+                }
+                if (a.type === 'clock_out') {
+                    if (!days[dKey].out || new Date(a.timestamp) > new Date(days[dKey].out)) {
+                        days[dKey].out = a.timestamp;
+                    }
+                }
             });
 
             let totalHours = 0;
             let daysPresent = 0;
             let lateDays = 0;
 
-            const now = new Date();
-            const todayStr = now.toDateString();
+            const jakartaTodayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Jakarta' });
+            const nowJakarta = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Jakarta' }));
 
             Object.entries(days).forEach(([dateStr, times]) => {
-                const isToday = dateStr === todayStr;
-                const isPast7PM = now.getHours() >= 19;
+                const isToday = dateStr === jakartaTodayStr;
+                const isPast7PM = nowJakarta.getHours() >= 19;
                 
                 let isValid = false;
                 if (times.in && times.out) {
@@ -318,9 +345,14 @@ app.get('/api/attendance/summary/monthly', async (req, res) => {
 
                 if (isValid) {
                     daysPresent++;
-                    const inTime = new Date(times.in);
-                    if (inTime.getHours() * 60 + inTime.getMinutes() >= lateThresholdMinutes) {
-                        lateDays++;
+                    const d = new Date(times.in);
+                    const jakartaTime = d.toLocaleString('en-US', { timeZone: 'Asia/Jakarta', hour12: false });
+                    const timePart = jakartaTime.split(', ')[1];
+                    if (timePart) {
+                        const [h, m] = timePart.split(':').map(Number);
+                        if ((h * 60 + m) > lateThresholdMinutes) {
+                            lateDays++;
+                        }
                     }
                 }
             });
@@ -360,18 +392,31 @@ app.get('/api/employees', async (req, res) => {
 app.put('/api/employees/:id', async (req, res) => {
     try {
         const { id } = req.params;
-        const { position, department, role, employeeId, employmentStatus, manager, teamMembers } = req.body;
+        const { position, department, role, employeeId, employmentStatus, manager, teamMembers, leaveQuota, contractEnd } = req.body;
+        
+        console.log('📋 [UPDATE EMPLOYEE] Received contractEnd:', JSON.stringify(contractEnd), 'type:', typeof contractEnd);
         
         // 1. Ambil data lama sebelum diupdate untuk perbandingan
         const oldEmployee = await User.findById(id);
         if (!oldEmployee) return res.status(404).json({ success: false, message: 'Karyawan tidak ditemukan.' });
 
         // 2. Jalankan update utama
+        const updateData = { position, department, role, employeeId, employmentStatus, manager, teamMembers, leaveQuota };
+        
+        // Ensure contractEnd is handled correctly (null if empty string, or Date object)
+        if (contractEnd !== undefined) {
+            updateData.contractEnd = (contractEnd === '' || contractEnd === null) ? null : new Date(contractEnd);
+        }
+        
+        console.log('📋 [UPDATE EMPLOYEE] Saving contractEnd as:', updateData.contractEnd);
+
         const updatedEmployee = await User.findByIdAndUpdate(
             id,
-            { position, department, role, employeeId, employmentStatus, manager, teamMembers },
+            updateData,
             { new: true }
         );
+        
+        console.log('📋 [UPDATE EMPLOYEE] Saved. DB contractEnd is now:', updatedEmployee.contractEnd);
 
         // 3. LOGIKA SINKRONISASI 360°
         
@@ -449,7 +494,7 @@ app.delete('/api/employees/:id', async (req, res) => {
 app.put('/api/employees/:id/payroll', async (req, res) => {
     try {
         const { id } = req.params;
-        const { baseSalary, allowance, role, bankAccount, payrollStatus } = req.body;
+        const { baseSalary, allowance, role, bankAccount, payrollStatus, leaveQuota, contractEnd } = req.body;
         
         const updateData = { 
             baseSalary: Number(baseSalary), 
@@ -458,6 +503,8 @@ app.put('/api/employees/:id/payroll', async (req, res) => {
         if (role) updateData.role = role;
         if (bankAccount !== undefined) updateData.bankAccount = bankAccount;
         if (payrollStatus) updateData.payrollStatus = payrollStatus;
+        if (leaveQuota !== undefined) updateData.leaveQuota = Number(leaveQuota);
+        if (contractEnd !== undefined) updateData.contractEnd = (contractEnd === '' || contractEnd === null) ? null : new Date(contractEnd);
 
         const updatedUser = await User.findByIdAndUpdate(
             id,
@@ -469,7 +516,7 @@ app.put('/api/employees/:id/payroll', async (req, res) => {
             return res.status(404).json({ success: false, message: 'Karyawan tidak ditemukan.' });
         }
 
-        res.status(200).json({ success: true, message: 'Payroll berhasil diperbarui!', user: updatedUser });
+        res.status(200).json({ success: true, message: 'Payroll & Kontrak berhasil diperbarui!', employee: updatedUser });
     } catch (error) {
         console.error('❌ Gagal update payroll:', error.message);
         res.status(500).json({ success: false, message: 'Gagal memperbarui payroll.' });
@@ -686,8 +733,25 @@ app.put('/api/requests/:id/status', async (req, res) => {
     try {
         const { status } = req.body;
         const { id } = req.params;
+        
+        const oldRequest = await Request.findById(id);
+        if (!oldRequest) return res.status(404).json({ success: false, message: 'Request not found.' });
+
         const updatedRequest = await Request.findByIdAndUpdate(id, { status }, { new: true });
-        if (!updatedRequest) return res.status(404).json({ success: false, message: 'Request not found.' });
+        
+        // Luct quota if Approved and was not previously Approved
+        if (status === 'Approved' && oldRequest.status !== 'Approved' && updatedRequest.type === 'Leave') {
+            const start = new Date(updatedRequest.startDate);
+            const end = new Date(updatedRequest.endDate);
+            const diffTime = Math.abs(end - start);
+            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+
+            await User.findOneAndUpdate(
+                { email: updatedRequest.email },
+                { $inc: { leaveQuota: -diffDays } }
+            );
+        }
+
         res.status(200).json({ success: true, message: `Request ${status}!`, request: updatedRequest });
     } catch (error) {
         res.status(500).json({ success: false, message: 'Failed to update request status.' });
