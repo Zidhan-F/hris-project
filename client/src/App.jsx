@@ -441,11 +441,14 @@ function App() {
       if (result.data.success) {
         setUser(result.data.user);
         setToken(credential);
+        // SECURITY: Set auth header for ALL subsequent API requests
+        axios.defaults.headers.common['Authorization'] = `Bearer ${credential}`;
         fetchHistory(result.data.user.email);
       }
     } catch (error) {
       console.error('Gagal verifikasi:', error);
-      setStatusMsg({ type: 'error', text: 'Gagal memverifikasi akun Google.' });
+      const msg = error.response?.data?.message || 'Gagal memverifikasi akun Google.';
+      setStatusMsg({ type: 'error', text: msg });
     } finally {
       setLoading(false);
     }
@@ -500,8 +503,8 @@ function App() {
     setClockLoading(true);
     setStatusMsg(null);
     try {
+      // SECURITY: Token sent via Authorization header (not body)
       const result = await axios.post(`${API_URL}/api/attendance/submit`, {
-        token: token,
         lat: userLocation.lat,
         lng: userLocation.lng,
         type: type
@@ -542,6 +545,8 @@ function App() {
     setStatusMsg(null);
     setActiveMenu('dashboard');
     setActiveTab('feed');
+    // SECURITY: Remove auth header on logout
+    delete axios.defaults.headers.common['Authorization'];
   };
 
   const openSidebar = () => { setSidebarOpen(true); setSidebarClosing(false); };
@@ -1302,7 +1307,7 @@ function App() {
                         onClick={() => user?.role !== 'employee' && setSelectedEmployee(emp)} 
                         style={{ cursor: user?.role === 'employee' ? 'default' : 'pointer' }}
                       >
-                        <div className="employee-card-avatar">{emp.profilePicture ? <img src={emp.profilePicture} alt="" /> : <div className="employee-avatar-initials">{getInitials(emp.name)}</div>}</div>
+                        <div className="employee-card-avatar">{emp.profilePicture ? <img src={emp.profilePicture} alt="" referrerPolicy="no-referrer" /> : <div className="employee-avatar-initials">{getInitials(emp.name)}</div>}</div>
                         <div className="employee-card-info">
                           <h4>{emp.name}</h4>
                           <p>{emp.position}</p>
