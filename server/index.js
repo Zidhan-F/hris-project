@@ -1,5 +1,9 @@
 const express = require('express');
 const mongoose = require('mongoose');
+const Settings = require('./models/Settings');
+const PayrollSettings = require('./models/PayrollSettings');
+
+
 const cors = require('cors');
 const dotenv = require('dotenv');
 const helmet = require('helmet');
@@ -7,11 +11,35 @@ const rateLimit = require('express-rate-limit');
 const { OAuth2Client } = require('google-auth-library');
 const User = require('./models/User');
 const Request = require('./models/Request');
+const Payroll = require('./models/Payroll');
+const PayrollLog = require('./models/PayrollLog');
 const ical = require('node-ical');
+
+
+// Payroll Services
+const { calculateEmployeePayroll, calculateAllPayroll, generateBankTransferCSV, RATES, PTKP_TABLE, getMonthName } = require('./services/payrollEngine');
+const { generatePayslipPDF } = require('./services/pdfGenerator');
+const { sendPayslipEmail, sendBulkPayslips } = require('./services/emailService');
+const { initCronJobs, getCronStatus } = require('./services/cronJobs');
 
 dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 5000;
+
+function calculateDistance(lat1, lon1, lat2, lon2) {
+    const R = 6371e3; // Earth radius in meters
+    const phi1 = lat1 * Math.PI / 180;
+    const phi2 = lat2 * Math.PI / 180;
+    const deltaPhi = (lat2 - lat1) * Math.PI / 180;
+    const deltaLambda = (lon2 - lon1) * Math.PI / 180;
+
+    const a = Math.sin(deltaPhi / 2) * Math.sin(deltaPhi / 2) +
+              Math.cos(phi1) * Math.cos(phi2) *
+              Math.sin(deltaLambda / 2) * Math.sin(deltaLambda / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+    return R * c; // in meters
+}
 
 // Inisialisasi Google OAuth2 Client
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
@@ -79,7 +107,11 @@ if (process.env.NODE_ENV === 'production') {
 // DATABASE CONNECTION
 // ============================================================
 mongoose.connect(process.env.MONGO_URI)
-    .then(() => console.log('✅ Database connected'))
+    .then(() => {
+        console.log('✅ Database connected');
+        // Initialize Cron Jobs after DB is ready
+        initCronJobs();
+    })
     .catch(err => console.log('❌ Database error:', err.message));
 
 // ============================================================
@@ -95,10 +127,19 @@ const Attendance = mongoose.model('Attendance', new mongoose.Schema({
     timestamp: { type: Date, default: Date.now }
 }));
 
-const Settings = mongoose.model('Settings', new mongoose.Schema({
-    key: { type: String, unique: true, required: true },
-    value: mongoose.Schema.Types.Mixed
-}));
+
+// Helper to get or init dynamic settings
+
+async function getDynamicSetting(key, defaultValue) {
+    try {
+        const setting = await Settings.findOne({ key });
+        return (setting && setting.value !== undefined && setting.value !== null) ? setting.value : defaultValue;
+
+    } catch (e) {
+        return defaultValue;
+    }
+}
+
 
 // ============================================================
 // SECURITY HELPERS
@@ -347,6 +388,32 @@ app.post('/api/attendance/submit', authMiddleware, async (req, res) => {
             return res.status(400).json({ success: false, message: 'Tipe absensi tidak valid.' });
         }
 
+        // --- GEOFENCING VERIFICATION (Logic Refined) ---
+        const officeSetting = await Settings.findOne({ key: 'office_location' });
+        const office = officeSetting ? officeSetting.value : { lat: -6.1528, lng: 106.7909, radius: 100 }; // Fallback to default
+        
+        // Explicitly cast to Number to avoid string comparison errors
+        const userLat = Number(lat);
+        const userLng = Number(lng);
+        const officeLat = Number(office.lat);
+        const officeLng = Number(office.lng);
+        const allowedRadius = Number(office.radius || 100);
+
+        const distance = calculateDistance(userLat, userLng, officeLat, officeLng);
+
+        if (distance > allowedRadius) {
+            console.log(`❌ [GEOFENCE] Attendance rejected for ${req.user.email}. Distance: ${Math.round(distance)}m, Allowed: ${allowedRadius}m`);
+            return res.status(400).json({
+                success: false,
+                message: `Absensi Gagal: Anda berada di luar radius kantor! Jarak Anda: ${Math.round(distance)} meter dari titik kantor, sedangkan batas maksimal adalah ${allowedRadius} meter.`,
+                debug: {
+                    distance: Math.round(distance),
+                    radius: allowedRadius
+                }
+            });
+        }
+
+
         // Use authenticated user data (not from body — prevents spoofing)
         const absenBaru = new Attendance({
             email: req.user.email,
@@ -356,6 +423,7 @@ app.post('/api/attendance/submit', authMiddleware, async (req, res) => {
             longitude: lng,
             type: type || 'clock_in'
         });
+
 
         await absenBaru.save();
 
@@ -405,6 +473,20 @@ app.get('/api/attendance/history', authMiddleware, async (req, res) => {
         res.status(200).json({ success: true, records });
     } catch (error) {
         res.status(500).json({ success: false, message: 'Gagal mengambil riwayat.' });
+    }
+});
+
+// ============================================================
+// ENDPOINT: Payroll Audit Logs (Admin/HRD Only)
+// ============================================================
+app.get('/api/payroll/logs', authMiddleware, requireRole('admin', 'hrd'), async (req, res) => {
+    try {
+        const logs = await PayrollLog.find({})
+            .sort({ timestamp: -1 })
+            .limit(50);
+        res.json({ success: true, logs });
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Gagal mengambil log payroll.' });
     }
 });
 
@@ -679,7 +761,12 @@ app.delete('/api/employees/:id', authMiddleware, requireRole('admin'), async (re
 app.put('/api/employees/:id/payroll', authMiddleware, requireRole('admin', 'manager', 'hrd'), async (req, res) => {
     try {
         const { id } = req.params;
-        const { baseSalary, allowance, role, bankAccount, payrollStatus, leaveQuota, contractEnd } = req.body;
+        const { 
+            baseSalary, allowance, role, bankAccount, bankName, ptkpStatus, 
+            mealAllowanceRate, transportAllowanceRate, payrollStatus, leaveQuota, contractEnd,
+            bpjsKesehatanAmount, bpjsTkAmount, pph21Amount
+        } = req.body;
+
 
         // SECURITY: Input validation
         const validationErrors = validatePayrollInput(req.body);
@@ -695,9 +782,19 @@ app.put('/api/employees/:id/payroll', authMiddleware, requireRole('admin', 'mana
         // SECURITY: Only admin can change roles via payroll
         if (role && req.user.role === 'admin') updateData.role = role;
         if (bankAccount !== undefined) updateData.bankAccount = bankAccount;
+        if (bankName !== undefined) updateData.bankName = bankName;
+        if (ptkpStatus && ['TK/0','TK/1','TK/2','TK/3','K/0','K/1','K/2','K/3'].includes(ptkpStatus)) {
+            updateData.ptkpStatus = ptkpStatus;
+        }
+        if (mealAllowanceRate !== undefined) updateData.mealAllowanceRate = Number(mealAllowanceRate);
+        if (transportAllowanceRate !== undefined) updateData.transportAllowanceRate = Number(transportAllowanceRate);
         if (payrollStatus) updateData.payrollStatus = payrollStatus;
         if (leaveQuota !== undefined) updateData.leaveQuota = Number(leaveQuota);
+        if (bpjsKesehatanAmount !== undefined) updateData.bpjsKesehatanAmount = Number(bpjsKesehatanAmount);
+        if (bpjsTkAmount !== undefined) updateData.bpjsTkAmount = Number(bpjsTkAmount);
+        if (pph21Amount !== undefined) updateData.pph21Amount = Number(pph21Amount);
         if (contractEnd !== undefined) updateData.contractEnd = (contractEnd === '' || contractEnd === null) ? null : new Date(contractEnd);
+
 
         const updatedUser = await User.findByIdAndUpdate(id, updateData, { new: true });
 
@@ -951,20 +1048,39 @@ app.put('/api/requests/:id/status', authMiddleware, requireRole('admin', 'manage
         const oldRequest = await Request.findById(id);
         if (!oldRequest) return res.status(404).json({ success: false, message: 'Request not found.' });
 
-        const updatedRequest = await Request.findByIdAndUpdate(id, { status }, { new: true });
+        let unpaidDays = 0;
+        let isUnpaid = false;
 
-        // Deduct leave quota if approved
-        if (status === 'Approved' && oldRequest.status !== 'Approved' && updatedRequest.type === 'Leave') {
-            const start = new Date(updatedRequest.startDate);
-            const end = new Date(updatedRequest.endDate);
-            const diffTime = Math.abs(end - start);
-            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+        // Special logic for LEAVE approval: check quota
+        if (status === 'Approved' && oldRequest.status !== 'Approved' && oldRequest.type === 'Leave') {
+            const user = await User.findOne(emailQuery(oldRequest.email));
+            if (user) {
+                const start = new Date(oldRequest.startDate);
+                const end = new Date(oldRequest.endDate);
+                const requestedDays = Math.ceil(Math.abs(end - start) / (1000 * 60 * 60 * 24)) + 1;
+                
+                // Calculate how many days can be "Paid" from quota
+                const currentQuota = Math.max(0, user.leaveQuota || 0);
+                const paidDays = Math.min(requestedDays, currentQuota);
+                
+                unpaidDays = Math.max(0, requestedDays - paidDays);
+                isUnpaid = unpaidDays > 0;
 
-            await User.findOneAndUpdate(
-                emailQuery(updatedRequest.email),
-                { $inc: { leaveQuota: -diffDays } }
-            );
+                // Deduct only the paid portion from the quota
+                if (paidDays > 0) {
+                    await User.findOneAndUpdate(
+                        emailQuery(oldRequest.email),
+                        { $inc: { leaveQuota: -paidDays } }
+                    );
+                }
+            }
         }
+
+        const updatedRequest = await Request.findByIdAndUpdate(id, { 
+            status, 
+            unpaidDays, 
+            isUnpaid 
+        }, { new: true });
 
         res.status(200).json({ success: true, message: `Request ${status}!`, request: updatedRequest });
     } catch (error) {
@@ -1005,9 +1121,19 @@ app.put('/api/settings/office', authMiddleware, requireRole('admin', 'hrd'), asy
 
         const setting = await Settings.findOneAndUpdate(
             { key: 'office_location' },
-            { value: { lat: parsedLat, lng: parsedLng, radius: parsedRadius, name: name || 'EMS Office' } },
-            { upsert: true, new: true }
+            { 
+                value: { 
+                    lat: parsedLat, 
+                    lng: parsedLng, 
+                    radius: parsedRadius, 
+                    name: name || 'EMS Office' 
+                },
+                updatedAt: new Date() // Force timestamp update for sync visibility
+            },
+            { upsert: true, new: true, runValidators: true }
         );
+        console.log(`✅ [SETTINGS] Office location updated: ${name} (${parsedLat}, ${parsedLng}) R:${parsedRadius}`);
+
         res.json({ success: true, message: 'Lokasi kantor diperbarui!', data: setting.value });
     } catch (error) {
         res.status(500).json({ success: false, message: 'Failed to update settings.' });
@@ -1045,6 +1171,491 @@ app.put('/api/settings/workdays', authMiddleware, requireRole('admin', 'hrd'), a
         res.json({ success: true, message: 'Hari kerja diperbarui!', data: setting.value });
     } catch (error) {
         res.status(500).json({ success: false, message: 'Failed to update workdays.' });
+    }
+});
+
+// ============================================================
+// PAYROLL AUTOMATION ENDPOINTS
+// ============================================================
+
+// --- Calculate Payroll (Manual Trigger) ---
+app.post('/api/payroll/calculate', authMiddleware, requireRole('admin', 'hrd'), async (req, res) => {
+    try {
+        const { month, year, ids } = req.body;
+        const targetMonth = month !== undefined ? parseInt(month) : new Date().getMonth();
+        const targetYear = year !== undefined ? parseInt(year) : new Date().getFullYear();
+
+        if (targetMonth < 0 || targetMonth > 11 || targetYear < 2020 || targetYear > 2100) {
+            return res.status(400).json({ success: false, message: 'Bulan atau tahun tidak valid.' });
+        }
+
+        const result = await calculateAllPayroll(targetMonth, targetYear, req.user.email, ids);
+        res.json({
+            success: true,
+            message: `Payroll ${getMonthName(targetMonth)} ${targetYear} berhasil dihitung untuk ${result.results.length} karyawan.`,
+            data: {
+                total: result.total,
+                calculated: result.results.length,
+                errors: result.errors.length,
+                errorDetails: result.errors
+            }
+        });
+    } catch (error) {
+        console.error('Payroll calculate error:', error.message);
+        res.status(500).json({ success: false, message: 'Gagal menghitung payroll.' });
+    }
+});
+
+// --- Get Payroll Records (Admin/HRD) ---
+app.get('/api/payroll/records', authMiddleware, requireRole('admin', 'hrd', 'manager'), async (req, res) => {
+    try {
+        const { month, year } = req.query;
+        const targetMonth = month !== undefined ? parseInt(month) : new Date().getMonth();
+        const targetYear = year !== undefined ? parseInt(year) : new Date().getFullYear();
+
+        const records = await Payroll.find({
+            'period.month': targetMonth,
+            'period.year': targetYear
+        }).sort({ name: 1 });
+
+        const summary = {
+            totalGross: records.reduce((s, r) => s + r.grossPay, 0),
+            totalDeductions: records.reduce((s, r) => s + r.totalDeductions, 0),
+            totalNet: records.reduce((s, r) => s + r.netPay, 0),
+            totalEmployees: records.length,
+            statusCounts: {
+                draft: records.filter(r => r.status === 'Draft').length,
+                finalized: records.filter(r => r.status === 'Finalized').length,
+                paid: records.filter(r => r.status === 'Paid').length
+            }
+        };
+
+        res.json({ success: true, records, summary });
+    } catch (error) {
+        console.error('Payroll records error:', error.message);
+        res.status(500).json({ success: false, message: 'Gagal mengambil data payroll.' });
+    }
+});
+
+// --- Get My Payslip ---
+app.get('/api/payroll/my-payslip', authMiddleware, async (req, res) => {
+    try {
+        const { month, year } = req.query;
+        const targetMonth = month !== undefined ? parseInt(month) : new Date().getMonth();
+        const targetYear = year !== undefined ? parseInt(year) : new Date().getFullYear();
+
+        const payslip = await Payroll.findOne({
+            email: { $regex: new RegExp("^" + req.user.email.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + "$", "i") },
+            'period.month': targetMonth,
+            'period.year': targetYear
+        });
+
+        // Also get history (last 6 months)
+        const sixMonthsAgo = new Date();
+        sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+        const history = await Payroll.find({
+            email: { $regex: new RegExp("^" + req.user.email.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + "$", "i") },
+            calculatedAt: { $gte: sixMonthsAgo }
+        }).sort({ 'period.year': -1, 'period.month': -1 }).limit(6);
+
+        res.json({ success: true, payslip, history });
+    } catch (error) {
+        console.error('My payslip error:', error.message);
+        res.status(500).json({ success: false, message: 'Gagal mengambil payslip.' });
+    }
+});
+
+// --- Finalize Payroll ---
+app.put('/api/payroll/:id/finalize', authMiddleware, requireRole('admin', 'hrd'), async (req, res) => {
+    try {
+        const record = await Payroll.findByIdAndUpdate(
+            req.params.id,
+            { status: 'Finalized', updatedAt: new Date() },
+            { new: true }
+        );
+        if (!record) return res.status(404).json({ success: false, message: 'Record tidak ditemukan.' });
+
+        // Audit Log
+        await new PayrollLog({
+            action: 'FINALIZE_SINGLE',
+            performedBy: req.user.name,
+            period: record.period,
+            details: `Finalized payroll for ${record.name}.`
+        }).save();
+
+        res.json({ success: true, message: `Payroll ${record.name} berhasil di-finalize.`, record });
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Gagal finalize payroll.' });
+    }
+});
+
+// --- Finalize ALL Payroll for a period ---
+app.put('/api/payroll/finalize-all', authMiddleware, requireRole('admin', 'hrd'), async (req, res) => {
+    try {
+        const { month, year, ids } = req.body;
+        const targetMonth = month !== undefined ? parseInt(month) : new Date().getMonth();
+        const targetYear = year !== undefined ? parseInt(year) : new Date().getFullYear();
+
+        const query = { 'period.month': targetMonth, 'period.year': targetYear, status: 'Draft' };
+        if (ids && ids.length > 0) {
+            query._id = { $in: ids };
+        }
+
+        const result = await Payroll.updateMany(query, { status: 'Finalized', updatedAt: new Date() });
+
+        // Audit Log
+        await new PayrollLog({
+            action: 'FINALIZE_ALL',
+            performedBy: req.user.name,
+            period: { month: targetMonth, year: targetYear },
+            entitiesCount: result.modifiedCount,
+            details: `Finalized ${result.modifiedCount} payroll records.`
+        }).save();
+
+        res.json({ success: true, message: `${result.modifiedCount} payroll records di-finalize.`, modified: result.modifiedCount });
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Gagal finalize semua payroll.' });
+    }
+});
+
+// --- Mark Payroll as Paid ---
+app.put('/api/payroll/:id/mark-paid', authMiddleware, requireRole('admin', 'hrd'), async (req, res) => {
+    try {
+        const record = await Payroll.findOneAndUpdate(
+            { _id: req.params.id, status: 'Finalized' },
+            { status: 'Paid', updatedAt: new Date() },
+            { new: true }
+        );
+        
+        if (!record) {
+            return res.status(400).json({ 
+                success: false, 
+                message: 'Record tidak ditemukan atau belum berstatus Finalized. Harap finalize dahulu.' 
+            });
+        }
+
+        // Also update User payrollStatus
+        await User.findByIdAndUpdate(record.employeeId, { payrollStatus: 'Paid' });
+
+        // Audit Log
+        await new PayrollLog({
+            action: 'MARK_PAID_SINGLE',
+            performedBy: req.user.name,
+            period: record.period,
+            details: `Marked payroll for ${record.name} as PAID.`
+        }).save();
+
+        res.json({ success: true, message: `Payroll ${record.name} ditandai PAID.`, record });
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Gagal mark as paid.' });
+    }
+});
+
+// --- Mark ALL as Paid ---
+app.put('/api/payroll/mark-all-paid', authMiddleware, requireRole('admin', 'hrd'), async (req, res) => {
+    try {
+        const { month, year, ids } = req.body;
+        const targetMonth = month !== undefined ? parseInt(month) : new Date().getMonth();
+        const targetYear = year !== undefined ? parseInt(year) : new Date().getFullYear();
+
+        // Only process records that are already Finalized
+        const query = { 
+            'period.month': targetMonth, 
+            'period.year': targetYear, 
+            status: 'Finalized'
+        };
+        
+        if (ids && ids.length > 0) {
+            query._id = { $in: ids };
+        }
+
+        const records = await Payroll.find(query, { employeeId: 1 });
+        const employeeIds = records.map(r => r.employeeId);
+
+        // Bulk update Payrolls
+        await Payroll.updateMany(query, { status: 'Paid', updatedAt: new Date() });
+        
+        // Bulk update Users
+        if (employeeIds.length > 0) {
+            await User.updateMany({ _id: { $in: employeeIds } }, { payrollStatus: 'Paid' });
+        }
+
+        // Audit Log
+        await new PayrollLog({
+            action: 'MARK_PAID_ALL',
+            performedBy: req.user.name,
+            period: { month: targetMonth, year: targetYear },
+            entitiesCount: records.length,
+            details: `Marked ${records.length} payroll records as PAID.`
+        }).save();
+
+        res.json({ success: true, message: `${records.length} payroll records ditandai PAID.`, modified: records.length });
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Gagal mark all as paid.' });
+    }
+});
+
+// --- Mark Payroll as Unpaid (Revert) ---
+app.put('/api/payroll/:id/mark-unpaid', authMiddleware, requireRole('admin', 'hrd'), async (req, res) => {
+    try {
+        const record = await Payroll.findByIdAndUpdate(
+            req.params.id,
+            { status: 'Draft', updatedAt: new Date() },
+            { new: true }
+        );
+        if (!record) return res.status(404).json({ success: false, message: 'Record tidak ditemukan.' });
+
+        // Also update User payrollStatus
+        await User.findByIdAndUpdate(record.employeeId, { payrollStatus: 'Unpaid' });
+
+        // Audit Log
+        await new PayrollLog({
+            action: 'MARK_UNPAID_SINGLE',
+            performedBy: req.user.name,
+            period: record.period,
+            details: `Marked payroll for ${record.name} as UNPAID.`
+        }).save();
+
+        res.json({ success: true, message: `Payroll ${record.name} ditandai UNPAID.`, record });
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Gagal mark as unpaid.' });
+    }
+});
+
+// --- Mark ALL as Unpaid (Bulk Revert) ---
+app.put('/api/payroll/mark-all-unpaid', authMiddleware, requireRole('admin', 'hrd'), async (req, res) => {
+    try {
+        const { month, year, ids } = req.body;
+        const targetMonth = month !== undefined ? parseInt(month) : new Date().getMonth();
+        const targetYear = year !== undefined ? parseInt(year) : new Date().getFullYear();
+
+        const query = { 
+            'period.month': targetMonth, 
+            'period.year': targetYear, 
+            status: { $in: ['Paid', 'Finalized'] } 
+        };
+        if (ids && ids.length > 0) {
+            query._id = { $in: ids };
+        }
+
+        const records = await Payroll.find(query, { employeeId: 1 });
+        const employeeIds = records.map(r => r.employeeId);
+
+        // Bulk update Payrolls
+        await Payroll.updateMany(query, { status: 'Draft', updatedAt: new Date() });
+        
+        // Bulk update Users
+        if (employeeIds.length > 0) {
+            await User.updateMany({ _id: { $in: employeeIds } }, { payrollStatus: 'Unpaid' });
+        }
+
+        // Audit Log
+        await new PayrollLog({
+            action: 'MARK_UNPAID_ALL',
+            performedBy: req.user.name,
+            period: { month: targetMonth, year: targetYear },
+            entitiesCount: records.length,
+            details: `Marked ${records.length} payroll records as UNPAID.`
+        }).save();
+
+        res.json({ success: true, message: `${records.length} payroll records ditandai UNPAID (Draft).`, modified: records.length });
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Gagal mark all as unpaid.' });
+    }
+});
+
+
+// --- Download PDF Payslip ---
+app.get('/api/payroll/:id/pdf', authMiddleware, async (req, res) => {
+    try {
+        const record = await Payroll.findById(req.params.id);
+        if (!record) return res.status(404).json({ success: false, message: 'Record tidak ditemukan.' });
+
+        // Security: Only own payslip or admin/hrd
+        const isPrivileged = ['admin', 'hrd', 'manager'].includes(req.user.role);
+        if (!isPrivileged && record.email.toLowerCase() !== req.user.email.toLowerCase()) {
+            return res.status(403).json({ success: false, message: 'Akses ditolak.' });
+        }
+
+        const pdfBuffer = await generatePayslipPDF(record);
+        const filename = `Payslip_${record.name.replace(/\s+/g, '_')}_${getMonthName(record.period.month)}_${record.period.year}.pdf`;
+
+        res.set({
+            'Content-Type': 'application/pdf',
+            'Content-Disposition': `attachment; filename="${filename}"`,
+            'Content-Length': pdfBuffer.length
+        });
+        res.send(pdfBuffer);
+    } catch (error) {
+        console.error('PDF generate error:', error.message);
+        res.status(500).json({ success: false, message: 'Gagal generate PDF.' });
+    }
+});
+
+// --- Send Email Blast ---
+app.post('/api/payroll/send-emails', authMiddleware, requireRole('admin', 'hrd'), async (req, res) => {
+    try {
+        const { month, year, ids } = req.body;
+        const targetMonth = month !== undefined ? parseInt(month) : new Date().getMonth();
+        const targetYear = year !== undefined ? parseInt(year) : new Date().getFullYear();
+
+        const query = {
+            'period.month': targetMonth,
+            'period.year': targetYear,
+            status: { $in: ['Finalized', 'Paid'] }
+        };
+
+        if (ids && ids.length > 0) {
+            query._id = { $in: ids };
+        }
+
+        const records = await Payroll.find(query);
+
+        if (records.length === 0) {
+            return res.status(400).json({ success: false, message: 'Tidak ada payroll yang siap dikirim. Pastikan sudah di-finalize.' });
+        }
+
+        const result = await sendBulkPayslips(records, generatePayslipPDF);
+
+        // Audit Log
+        await new PayrollLog({
+            action: 'SEND_EMAILS',
+            performedBy: req.user.name,
+            period: { month: targetMonth, year: targetYear },
+            entitiesCount: result.sent,
+            details: `Sent ${result.sent} emails. Failed: ${result.failed}.`
+        }).save();
+
+        res.json({
+            success: true,
+            message: `Email blast selesai: ${result.sent} terkirim, ${result.failed} gagal, ${result.skipped} dilewati.`,
+            data: result
+        });
+    } catch (error) {
+        console.error('Email blast error:', error.message);
+        res.status(500).json({ success: false, message: 'Gagal mengirim email blast.' });
+    }
+});
+
+// --- Export Bank Transfer File ---
+app.get('/api/payroll/export-bank', authMiddleware, requireRole('admin', 'hrd'), async (req, res) => {
+    try {
+        const { month, year, format, ids } = req.query;
+        const targetMonth = month !== undefined ? parseInt(month) : new Date().getMonth();
+        const targetYear = year !== undefined ? parseInt(year) : new Date().getFullYear();
+        
+        let idArray = [];
+        if (ids) {
+            idArray = ids.split(',').filter(id => id.trim().length > 0);
+        }
+
+        const result = await generateBankTransferCSV(targetMonth, targetYear, format || 'bca', idArray);
+
+        if (!result.content || result.content.split('\n').length <= 2) {
+            return res.status(400).json({ success: false, message: 'Tidak ada data payroll yang tersedia untuk diekspor (pastikan sudah di-Finalized atau pilih baris tertentu).' });
+        }
+
+        // Audit Log
+        await new PayrollLog({
+            action: 'EXPORT_BANK',
+            performedBy: req.user.name,
+            period: { month: targetMonth, year: targetYear },
+            details: `Exported bank file in ${format || 'bca'} format.`
+        }).save();
+
+        const contentType = (format || 'mandiri') === 'mandiri' ? 'text/plain' : 'text/csv';
+        res.set({
+            'Content-Type': contentType,
+            'Content-Disposition': `attachment; filename="${result.filename}"`,
+        });
+        res.send(result.content);
+    } catch (error) {
+        console.error('Bank export error:', error.message);
+        res.status(500).json({ success: false, message: 'Gagal export file bank.' });
+    }
+});
+
+// ============================================================
+// ENDPOINT: Payroll Settings (PROTECTED - Admin/HRD)
+// ============================================================
+app.get('/api/settings/payroll', authMiddleware, requireRole('admin', 'hrd'), async (req, res) => {
+    try {
+        let settings = await PayrollSettings.findOne();
+        
+        // If no settings exist yet, create default one
+        if (!settings) {
+            settings = await PayrollSettings.create({});
+        }
+        
+        res.json({ 
+            success: true, 
+            settings: {
+                LATE_PENALTY_PER_DAY: settings.latePenaltyPerDay || 50000,
+                OVERTIME_RATE_PER_HOUR: settings.overtimeRatePerHour || 30000,
+                MEAL_ALLOWANCE_PER_DAY: settings.mealAllowancePerDay || 25000,
+                TRANSPORT_ALLOWANCE_PER_DAY: settings.transportAllowancePerDay || 20000,
+            },
+            fullSettings: settings,
+            defaults: RATES 
+        });
+    } catch (error) {
+        console.error('Fetch payroll settings error:', error);
+        res.status(500).json({ success: false, message: 'Failed to fetch payroll settings.' });
+    }
+});
+
+
+app.put('/api/settings/payroll', authMiddleware, requireRole('admin', 'hrd'), async (req, res) => {
+    try {
+        const { key, value, settings } = req.body;
+        
+        const updateData = { updatedAt: new Date(), updatedBy: req.user.email };
+        
+        if (settings) {
+            // Bulk update all settings
+            if (settings.LATE_PENALTY_PER_DAY !== undefined) updateData.latePenaltyPerDay = settings.LATE_PENALTY_PER_DAY;
+            if (settings.OVERTIME_RATE_PER_HOUR !== undefined) updateData.overtimeRatePerHour = settings.OVERTIME_RATE_PER_HOUR;
+            if (settings.MEAL_ALLOWANCE_PER_DAY !== undefined) updateData.mealAllowancePerDay = settings.MEAL_ALLOWANCE_PER_DAY;
+            if (settings.TRANSPORT_ALLOWANCE_PER_DAY !== undefined) updateData.transportAllowancePerDay = settings.TRANSPORT_ALLOWANCE_PER_DAY;
+        } else if (key) {
+            // Legacy single key update
+            if (key === 'LATE_PENALTY_PER_DAY') updateData.latePenaltyPerDay = value;
+            else if (key === 'OVERTIME_RATE_PER_HOUR') updateData.overtimeRatePerHour = value;
+            else if (key === 'MEAL_ALLOWANCE_PER_DAY') updateData.mealAllowancePerDay = value;
+            else if (key === 'TRANSPORT_ALLOWANCE_PER_DAY') updateData.transportAllowancePerDay = value;
+            else {
+                return res.status(400).json({ success: false, message: 'Setting key tidak dikenal.' });
+            }
+        } else {
+            return res.status(400).json({ success: false, message: 'Data setting tidak valid.' });
+        }
+
+        await PayrollSettings.findOneAndUpdate(
+            {}, // Single record
+            { $set: updateData },
+            { upsert: true, new: true }
+        );
+
+        res.json({ success: true, message: 'Pengaturan payroll berhasil diperbarui.' });
+    } catch (error) {
+        console.error('Update payroll settings error:', error);
+        res.status(500).json({ success: false, message: 'Gagal memperbarui settings.' });
+    }
+});
+
+
+
+
+
+
+
+// --- Cron Job Status ---
+app.get('/api/payroll/cron-status', authMiddleware, requireRole('admin'), async (req, res) => {
+    try {
+        const status = getCronStatus();
+        res.json({ success: true, data: status });
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Gagal mengambil status cron.' });
     }
 });
 

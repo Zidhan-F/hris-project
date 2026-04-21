@@ -103,9 +103,19 @@ function App() {
   const [payrollTab, setPayrollTab] = useState('mine');
   const [isEditingPayroll, setIsEditingPayroll] = useState(false);
   const [editPayrollData, setEditPayrollData] = useState({
-    id: '', name: '', baseSalary: 0, allowance: 0, role: '', bankAccount: '-', payrollStatus: 'Unpaid', leaveQuota: 0, contractEnd: ''
+    id: '', name: '', baseSalary: 0, allowance: 0, role: '', bankAccount: '-', bankName: '-', ptkpStatus: 'TK/0', mealAllowanceRate: 25000, transportAllowanceRate: 20000, payrollStatus: 'Unpaid', leaveQuota: 0, contractEnd: '',
+    bpjsKesehatanAmount: 0, bpjsTkAmount: 0, pph21Amount: 0
   });
+
   const [isSavingPayroll, setIsSavingPayroll] = useState(false);
+
+  // Payroll Automation States
+  const [payrollRecords, setPayrollRecords] = useState([]);
+  const [payrollSummary, setPayrollSummary] = useState({});
+  const [myPayslip, setMyPayslip] = useState(null);
+  const [myPayslipHistory, setMyPayslipHistory] = useState([]);
+  const [isCalculating, setIsCalculating] = useState(false);
+  const [payrollPeriod, setPayrollPeriod] = useState({ month: new Date().getMonth(), year: new Date().getFullYear() });
   const [welcomeIndex, setWelcomeIndex] = useState(0);
 
   // Dashboard Stats State
@@ -124,19 +134,22 @@ function App() {
 
   const fetchOfficeSettings = useCallback(async () => {
     try {
+      if(!axios.defaults.headers.common['Authorization']) return;
       const res = await axios.get(`${API_URL}/api/settings/office`);
       if (res.data.success) setOfficeSettings(res.data.data);
     } catch (err) { console.error('Error fetching office settings:', err); }
   }, []);
-  useEffect(() => { fetchOfficeSettings(); }, [fetchOfficeSettings]);
+  useEffect(() => { if (user) fetchOfficeSettings(); }, [fetchOfficeSettings, user]);
+
 
   const fetchWorkDays = useCallback(async () => {
     try {
+      if(!axios.defaults.headers.common['Authorization']) return;
       const res = await axios.get(`${API_URL}/api/settings/workdays`);
       if (res.data.success) setWorkDays(res.data.data);
     } catch (err) { console.error('Error fetching work days:', err); }
   }, []);
-  useEffect(() => { fetchWorkDays(); }, [fetchWorkDays]);
+  useEffect(() => { if (user) fetchWorkDays(); }, [fetchWorkDays, user]);
 
   const fetchMonthlyReports = useCallback(async (month, year) => {
     setIsFetchingReports(true);
@@ -268,6 +281,10 @@ function App() {
   useEffect(() => {
     if (activeMenu === 'dashboard' && activeTab === 'feed') { fetchOnLeaveToday(); fetchRecentActivities(); }
     if (activeMenu === 'leave') { fetchRequests(); if (['manager', 'admin'].includes(user?.role)) fetchPendingRequests(); }
+    if (activeMenu === 'payroll') {
+      fetchMyPayslip(payrollPeriod.month, payrollPeriod.year);
+      if (['admin', 'hrd', 'manager'].includes(user?.role)) fetchPayrollRecords(payrollPeriod.month, payrollPeriod.year);
+    }
   }, [activeMenu, fetchRequests, fetchPendingRequests, user?.role]);
 
   // ==================== HANDLERS ====================
@@ -419,7 +436,23 @@ function App() {
   const handleSavePayroll = async (e) => {
     e.preventDefault(); setIsSavingPayroll(true);
     try {
-      const res = await axios.put(`${API_URL}/api/employees/${editPayrollData.id}/payroll`, { baseSalary: editPayrollData.baseSalary, allowance: editPayrollData.allowance, role: editPayrollData.role, bankAccount: editPayrollData.bankAccount, payrollStatus: editPayrollData.payrollStatus, leaveQuota: editPayrollData.leaveQuota, contractEnd: editPayrollData.contractEnd });
+      const res = await axios.put(`${API_URL}/api/employees/${editPayrollData.id}/payroll`, { 
+        baseSalary: editPayrollData.baseSalary, 
+        allowance: editPayrollData.allowance, 
+        role: editPayrollData.role, 
+        bankAccount: editPayrollData.bankAccount, 
+        bankName: editPayrollData.bankName, 
+        ptkpStatus: editPayrollData.ptkpStatus, 
+        mealAllowanceRate: editPayrollData.mealAllowanceRate, 
+        transportAllowanceRate: editPayrollData.transportAllowanceRate, 
+        payrollStatus: editPayrollData.payrollStatus, 
+        leaveQuota: editPayrollData.leaveQuota, 
+        contractEnd: editPayrollData.contractEnd,
+        bpjsKesehatanAmount: editPayrollData.bpjsKesehatanAmount,
+        bpjsTkAmount: editPayrollData.bpjsTkAmount,
+        pph21Amount: editPayrollData.pph21Amount
+      });
+
       if (res.data.success && res.data.employee) {
         const freshEmp = res.data.employee;
         setEmployees(prev => prev.map(e => e._id === freshEmp._id ? freshEmp : e));
@@ -430,6 +463,143 @@ function App() {
     } catch (err) { console.error('Error saving payroll:', err); setStatusMsg({ type: 'error', text: 'Gagal memperbarui payroll.' }); }
     finally { setIsSavingPayroll(false); }
   };
+
+  // ==================== PAYROLL AUTOMATION HANDLERS ====================
+  const fetchPayrollRecords = useCallback(async (month, year) => {
+    const m = month ?? payrollPeriod.month;
+    const y = year ?? payrollPeriod.year;
+    try {
+      const res = await axios.get(`${API_URL}/api/payroll/records`, { params: { month: m, year: y } });
+      if (res.data.success) { setPayrollRecords(res.data.records); setPayrollSummary(res.data.summary); }
+    } catch (err) { console.error('Fetch payroll records error:', err); }
+  }, [payrollPeriod]);
+
+  const fetchMyPayslip = useCallback(async (month, year) => {
+    const m = month ?? payrollPeriod.month;
+    const y = year ?? payrollPeriod.year;
+    try {
+      const res = await axios.get(`${API_URL}/api/payroll/my-payslip`, { params: { month: m, year: y } });
+      if (res.data.success) { setMyPayslip(res.data.payslip); setMyPayslipHistory(res.data.history || []); }
+    } catch (err) { console.error('Fetch my payslip error:', err); }
+  }, [payrollPeriod]);
+
+  const handleRunPayroll = async (ids = []) => {
+    const isSelective = ids && ids.length > 0;
+    if (!window.confirm(isSelective ? `Hitung payroll untuk ${ids.length} karyawan terpilih?` : `Hitung payroll untuk semua karyawan?`)) return;
+    setIsCalculating(true);
+    try {
+      const res = await axios.post(`${API_URL}/api/payroll/calculate`, { month: payrollPeriod.month, year: payrollPeriod.year, ids });
+      if (res.data.success) {
+        setStatusMsg({ type: 'success', text: res.data.message }); setTimeout(() => setStatusMsg(null), 4000);
+        fetchPayrollRecords(payrollPeriod.month, payrollPeriod.year);
+      }
+    } catch (err) { console.error('Run payroll error:', err); setStatusMsg({ type: 'error', text: err.response?.data?.message || 'Gagal menghitung payroll.' }); }
+    finally { setIsCalculating(false); }
+  };
+
+
+  const handleFinalizeAll = async (ids = []) => {
+    const isSelective = ids && ids.length > 0;
+    if (!window.confirm(isSelective ? `Finalize ${ids.length} payroll terpilih?` : 'Finalize semua payroll Draft?')) return;
+    try {
+      const res = await axios.put(`${API_URL}/api/payroll/finalize-all`, { month: payrollPeriod.month, year: payrollPeriod.year, ids });
+      if (res.data.success) { setStatusMsg({ type: 'success', text: res.data.message }); setTimeout(() => setStatusMsg(null), 3000); fetchPayrollRecords(payrollPeriod.month, payrollPeriod.year); }
+    } catch (err) { setStatusMsg({ type: 'error', text: 'Gagal finalize.' }); }
+  };
+
+
+  const handleMarkAllPaid = async (ids = []) => {
+    const isSelective = ids && ids.length > 0;
+    if (!window.confirm(isSelective ? `Tandai ${ids.length} payroll terpilih sebagai PAID?` : 'Tandai semua payroll Finalized sebagai PAID?')) return;
+    try {
+      const res = await axios.put(`${API_URL}/api/payroll/mark-all-paid`, { month: payrollPeriod.month, year: payrollPeriod.year, ids });
+      if (res.data.success) { 
+        setStatusMsg({ type: 'success', text: res.data.message }); setTimeout(() => setStatusMsg(null), 3000); 
+        fetchPayrollRecords(payrollPeriod.month, payrollPeriod.year);
+        fetchEmployees(); // Sync Data Karyawan
+      }
+    } catch (err) { setStatusMsg({ type: 'error', text: 'Gagal mark as paid.' }); }
+  };
+
+
+
+  const handleFinalize = async (id) => {
+    try {
+      const res = await axios.put(`${API_URL}/api/payroll/${id}/finalize`);
+      if (res.data.success) { setStatusMsg({ type: 'success', text: res.data.message }); setTimeout(() => setStatusMsg(null), 3000); fetchPayrollRecords(payrollPeriod.month, payrollPeriod.year); }
+    } catch (err) { setStatusMsg({ type: 'error', text: 'Gagal finalize.' }); }
+  };
+
+  const handleMarkPaid = async (id) => {
+    try {
+      const res = await axios.put(`${API_URL}/api/payroll/${id}/mark-paid`);
+      if (res.data.success) { 
+        setStatusMsg({ type: 'success', text: res.data.message }); setTimeout(() => setStatusMsg(null), 3000); 
+        fetchPayrollRecords(payrollPeriod.month, payrollPeriod.year);
+        fetchEmployees(); // Sync Data Karyawan
+      }
+    } catch (err) { setStatusMsg({ type: 'error', text: 'Gagal mark as paid.' }); }
+  };
+
+  const handleMarkUnpaid = async (id) => {
+    try {
+      const res = await axios.put(`${API_URL}/api/payroll/${id}/mark-unpaid`);
+      if (res.data.success) { 
+        setStatusMsg({ type: 'success', text: res.data.message }); setTimeout(() => setStatusMsg(null), 3000); 
+        fetchPayrollRecords(payrollPeriod.month, payrollPeriod.year);
+        fetchEmployees(); // Sync Data Karyawan
+      }
+    } catch (err) { setStatusMsg({ type: 'error', text: 'Gagal mark as unpaid.' }); }
+  };
+
+  const handleMarkAllUnpaid = async (ids = []) => {
+    const isSelective = ids && ids.length > 0;
+    if (!window.confirm(isSelective ? `Tandai ${ids.length} payroll terpilih sebagai UNPAID?` : 'Tandai semua payroll Paid sebagai UNPAID?')) return;
+    try {
+      const res = await axios.put(`${API_URL}/api/payroll/mark-all-unpaid`, { month: payrollPeriod.month, year: payrollPeriod.year, ids });
+      if (res.data.success) { 
+        setStatusMsg({ type: 'success', text: res.data.message }); setTimeout(() => setStatusMsg(null), 3000); 
+        fetchPayrollRecords(payrollPeriod.month, payrollPeriod.year);
+        fetchEmployees(); // Sync Data Karyawan
+      }
+    } catch (err) { setStatusMsg({ type: 'error', text: 'Gagal mark all as unpaid.' }); }
+  };
+
+
+  const handleDownloadPDF = async (id) => {
+    try {
+      const res = await axios.get(`${API_URL}/api/payroll/${id}/pdf`, { responseType: 'blob' });
+      const url = window.URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+      const a = document.createElement('a'); a.href = url;
+      a.download = `payslip_${id}.pdf`; document.body.appendChild(a); a.click();
+      window.URL.revokeObjectURL(url); document.body.removeChild(a);
+    } catch (err) { console.error('Download PDF error:', err); setStatusMsg({ type: 'error', text: 'Gagal download PDF.' }); }
+  };
+
+  const handleExportBank = async (format, ids = []) => {
+    try {
+      const params = { month: payrollPeriod.month, year: payrollPeriod.year, format };
+      if (ids && ids.length > 0) params.ids = ids.join(',');
+      const res = await axios.get(`${API_URL}/api/payroll/export-bank`, { params, responseType: 'blob' });
+      const ext = format === 'mandiri' ? 'txt' : 'csv';
+      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const a = document.createElement('a'); a.href = url;
+      a.download = `transfer_${format}_${payrollPeriod.month + 1}_${payrollPeriod.year}.${ext}`; document.body.appendChild(a); a.click();
+      window.URL.revokeObjectURL(url); document.body.removeChild(a);
+      setStatusMsg({ type: 'success', text: `File bank transfer berhasil di-download!` }); setTimeout(() => setStatusMsg(null), 3000);
+    } catch (err) { console.error('Export bank error:', err); setStatusMsg({ type: 'error', text: 'Gagal export. Pastikan ada payroll yang sudah finalized.' }); }
+  };
+
+
+  const handleSendEmails = async (ids = []) => {
+    const isSelective = ids && ids.length > 0;
+    if (!window.confirm(isSelective ? `Kirim slip gaji ke ${ids.length} karyawan terpilih via email?` : 'Kirim slip gaji ke semua karyawan via email?')) return;
+    try {
+      const res = await axios.post(`${API_URL}/api/payroll/send-emails`, { month: payrollPeriod.month, year: payrollPeriod.year, ids });
+      if (res.data.success) { setStatusMsg({ type: 'success', text: res.data.message }); setTimeout(() => setStatusMsg(null), 5000); fetchPayrollRecords(payrollPeriod.month, payrollPeriod.year); }
+    } catch (err) { setStatusMsg({ type: 'error', text: err.response?.data?.message || 'Gagal mengirim email.' }); }
+  };
+
 
   // ==================== RENDER ====================
   if (!user) return <LoginPage loading={loading} statusMsg={statusMsg} handleLoginSuccess={handleLoginSuccess} handleLoginError={handleLoginError} />;
@@ -462,8 +632,16 @@ function App() {
           <EmployeeView user={user} employees={employees} employeesLoading={employeesLoading} searchQuery={searchQuery} setSearchQuery={setSearchQuery} selectedEmployee={selectedEmployee} setSelectedEmployee={setSelectedEmployee} empDetailTab={empDetailTab} setEmpDetailTab={setEmpDetailTab} handleEditEmployee={handleEditEmployee} empAttendanceHistory={empAttendanceHistory} isFetchingEmpAttendance={isFetchingEmpAttendance} setEmpAttendanceHistory={setEmpAttendanceHistory} setIsFetchingEmpAttendance={setIsFetchingEmpAttendance} />
         )}
         {activeMenu === 'payroll' && (
-          <PayrollView user={user} currentTime={currentTime} employees={employees} employeesLoading={employeesLoading} searchQuery={searchQuery} setSearchQuery={setSearchQuery} payrollTab={payrollTab} setPayrollTab={setPayrollTab} fetchEmployees={fetchEmployees} setEditPayrollData={setEditPayrollData} setIsEditingPayroll={setIsEditingPayroll} />
+          <PayrollView user={user} currentTime={currentTime} employees={employees} employeesLoading={employeesLoading} searchQuery={searchQuery} setSearchQuery={setSearchQuery} payrollTab={payrollTab} setPayrollTab={setPayrollTab} fetchEmployees={fetchEmployees} setEditPayrollData={setEditPayrollData} setIsEditingPayroll={setIsEditingPayroll}
+            payrollRecords={payrollRecords} payrollSummary={payrollSummary} myPayslip={myPayslip} myPayslipHistory={myPayslipHistory}
+            isCalculating={isCalculating} payrollPeriod={payrollPeriod} setPayrollPeriod={setPayrollPeriod}
+            handleRunPayroll={handleRunPayroll} handleFinalizeAll={handleFinalizeAll} handleMarkAllPaid={handleMarkAllPaid} handleMarkAllUnpaid={handleMarkAllUnpaid}
+            handleFinalize={handleFinalize} handleMarkPaid={handleMarkPaid} handleMarkUnpaid={handleMarkUnpaid} handleDownloadPDF={handleDownloadPDF}
+            handleExportBank={handleExportBank} handleSendEmails={handleSendEmails}
+            fetchPayrollRecords={fetchPayrollRecords} fetchMyPayslip={fetchMyPayslip}
+          />
         )}
+
         {activeMenu === 'leave' && (
           <LeaveView user={user} leaveTab={leaveTab} setLeaveTab={setLeaveTab} requests={requests} pendingRequests={pendingRequests} isFetchingRequests={isFetchingRequests} fetchPendingRequests={fetchPendingRequests} handleOpenRequest={handleOpenRequest} handleApproveRequest={handleApproveRequest} />
         )}

@@ -27,7 +27,16 @@ const userSchema = new mongoose.Schema({
   baseSalary: { type: Number, default: 5000000 },
   allowance: { type: Number, default: 0 },
   bankAccount: { type: String, default: '-' },
+  bankName: { type: String, default: '-' },
+  ptkpStatus: { type: String, enum: ['TK/0','TK/1','TK/2','TK/3','K/0','K/1','K/2','K/3'], default: 'TK/0' },
+  mealAllowanceRate: { type: Number, default: 25000 },
+  transportAllowanceRate: { type: Number, default: 20000 },
+  bpjsKesehatanAmount: { type: Number, default: 1 },
+  bpjsTkAmount: { type: Number, default: 1 },
+  pph21Amount: { type: Number, default: 1 },
   payrollStatus: { type: String, enum: ['Unpaid', 'Paid'], default: 'Unpaid' },
+
+
   leaveQuota: { type: Number, default: 0 },
   createdAt: { type: Date, default: Date.now }
 });

@@ -17,7 +17,10 @@ const requestSchema = new mongoose.Schema({
     enum: ['Pending', 'Approved', 'Rejected', 'Returned'], 
     default: 'Pending' 
   },
+  unpaidDays: { type: Number, default: 0 },
+  isUnpaid: { type: Boolean, default: false },
   timestamp: { type: Date, default: Date.now }
+
 });
 
 module.exports = mongoose.model('Request', requestSchema);

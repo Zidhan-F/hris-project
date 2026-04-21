@@ -142,11 +142,15 @@ export default function Dashboard({
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <div className={`distance-badge ${locationStatus === 'granted' ? 'in-range' : locationStatus === 'out_of_range' ? 'out-range' : 'loading'}`}>
-                  {locationStatus === 'loading' && <><span className="material-icons-outlined spin">sync</span> Detecting...</>}
-                  {locationStatus === 'denied' && <><span className="material-icons-outlined">gps_off</span> GPS Off</>}
-                  {locationStatus === 'granted' && <><span className="material-icons-outlined">check_circle</span> {distanceToOffice}m</>}
-                  {locationStatus === 'out_of_range' && <><span className="material-icons-outlined">warning</span> {distanceToOffice}m</>}
+                  {locationStatus === 'loading' && <><span className="material-icons-outlined spin">sync</span> Sensing...</>}
+                  {locationStatus === 'denied' && <><span className="material-icons-outlined">gps_off</span> GPS Hidden</>}
+                  {locationStatus === 'granted' && <><span className="material-icons-outlined">check_circle</span> In Range ({distanceToOffice}m)</>}
+                  {locationStatus === 'out_of_range' && <><span className="material-icons-outlined">warning</span> Out of Range ({distanceToOffice}m)</>}
                 </div>
+                <div style={{ fontSize: '11px', color: locationStatus === 'granted' ? '#16a34a' : '#dc2626', fontWeight: '500' }}>
+                  {locationStatus === 'granted' ? '✓ Ready for Attendance' : locationStatus === 'out_of_range' ? `✖ Move within ${officeSettings.radius}m` : ''}
+                </div>
+
                 {['admin', 'hrd'].includes(user?.role) && (
                   <button className="nav-icon-btn" style={{ width: '32px', height: '32px' }} onClick={() => { setEditOfficeData(officeSettings); setShowOfficeModal(true); }} title="Edit Office Location">
                     <span className="material-icons-outlined" style={{ fontSize: '18px' }}>settings</span>
@@ -201,10 +205,31 @@ export default function Dashboard({
             <p className="attendance-time">{formatTime(currentTime)}</p>
             <p className="attendance-date">{formatDate(currentTime)}</p>
             <div className="attendance-buttons">
-              <button className="btn-clock btn-clock-in" onClick={() => handleClock('clock_in')} disabled={clockLoading || locationStatus !== 'granted' || cameraStatus !== 'active'}>🟢 Clock In</button>
-              <button className="btn-clock btn-clock-out" onClick={() => handleClock('clock_out')} disabled={clockLoading || locationStatus !== 'granted' || cameraStatus !== 'active'}>🔴 Clock Out</button>
+              <button 
+                className="btn-clock btn-clock-in" 
+                onClick={() => handleClock('clock_in')} 
+                disabled={clockLoading || locationStatus !== 'granted' || cameraStatus !== 'active'}
+                title={locationStatus !== 'granted' ? `Anda di luar radius (${distanceToOffice}m > ${officeSettings.radius}m)` : ''}
+              >
+                🟢 Clock In
+              </button>
+              <button 
+                className="btn-clock btn-clock-out" 
+                onClick={() => handleClock('clock_out')} 
+                disabled={clockLoading || locationStatus !== 'granted' || cameraStatus !== 'active'}
+                title={locationStatus !== 'granted' ? `Anda di luar radius (${distanceToOffice}m > ${officeSettings.radius}m)` : ''}
+              >
+                🔴 Clock Out
+              </button>
             </div>
+            {locationStatus === 'out_of_range' && (
+              <p style={{ color: '#ef4444', fontSize: '11px', marginTop: '8px', textAlign: 'center' }}>
+                <span className="material-icons-outlined" style={{ fontSize: '13px', verticalAlign: 'middle' }}>info</span>
+                Jarak Anda <strong>{distanceToOffice}m</strong>. Maksimal izin adalah <strong>{officeSettings.radius}m</strong>.
+              </p>
+            )}
             {statusMsg && <div className={`status-message status-${statusMsg.type}`}>{statusMsg.text}</div>}
+
           </div>
 
           {/* 4. History Card */}
