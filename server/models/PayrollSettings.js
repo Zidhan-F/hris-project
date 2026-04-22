@@ -6,7 +6,7 @@ const payrollSettingsSchema = new mongoose.Schema({
     overtimeRatePerHour: { type: Number, default: 30000 },
     
     // Configurations
-    workHoursStart: { type: Number, default: 8.5 }, // 08:30
+    workHoursStart: { type: Number, default: 9.25 }, // 09:15
     overtimeStart: { type: Number, default: 18 },  // 18:00
     workingDaysPerMonth: { type: Number, default: 22 },
     

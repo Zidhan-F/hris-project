@@ -41,6 +41,14 @@ const payrollSchema = new mongoose.Schema({
   totalDeductions: { type: Number, default: 0 },
   netPay: { type: Number, default: 0 },
 
+  // === RATES USED (Historical Accuracy) ===
+  overtimeRatePerHour: { type: Number },
+  mealAllowanceRate: { type: Number },
+  transportAllowanceRate: { type: Number },
+  latePenaltyPerDay: { type: Number },
+  bpjsKesehatanRate: { type: Number },
+  bpjsKetenagakerjaanRate: { type: Number },
+
   // === ATTENDANCE SUMMARY ===
   attendanceSummary: {
     daysPresent: { type: Number, default: 0 },

@@ -27,7 +27,7 @@ async function generatePayslipPDF(payroll) {
       // ---- HEADER ----
       doc.rect(0, 0, 595.28, 100).fill('#1e3a5f');
       doc.fontSize(22).fillColor('#ffffff').font('Helvetica-Bold')
-        .text('EMS COMPANY', 50, 30);
+        .text('OUR Company', 50, 30);
       doc.fontSize(10).fillColor('#93c5fd').font('Helvetica')
         .text('Employee Management System — Official Payslip', 50, 58);
       doc.fontSize(10).fillColor('#93c5fd')
@@ -99,11 +99,18 @@ async function generatePayslipPDF(payroll) {
       doc.fontSize(11).font('Helvetica-Bold').text('KOMPONEN PENDAPATAN', 50, y4);
       doc.moveTo(50, y4 + 16).lineTo(545, y4 + 16).strokeColor('#e2e8f0').lineWidth(1).stroke();
 
+      const otRate = payroll.overtimeRatePerHour || 30000;
+      const mealRate = payroll.mealAllowanceRate || 25000;
+      const transRate = payroll.transportAllowanceRate || 20000;
+      const lateRate = payroll.latePenaltyPerDay || 50000;
+      const bpjsKS = (payroll.bpjsKesehatanRate || 0.01) * 100;
+      const bpjsTK = (payroll.bpjsKetenagakerjaanRate || 0.02) * 100;
+
       const earnings = [
         { label: 'Gaji Pokok', value: payroll.baseSalary },
-        { label: `Uang Lembur (${payroll.overtimeHours || 0} jam × Rp 30.000)`, value: payroll.overtimePay },
-        { label: `Uang Makan (${payroll.attendanceSummary?.daysPresent || 0} hari × Rp 25.000)`, value: payroll.mealAllowance },
-        { label: `Uang Transport (${payroll.attendanceSummary?.daysPresent || 0} hari × Rp 20.000)`, value: payroll.transportAllowance },
+        { label: `Uang Lembur (${payroll.overtimeHours || 0} jam — Tiered 1.5x/2.0x)`, value: payroll.overtimePay },
+        { label: `Uang Makan (${payroll.attendanceSummary?.daysPresent || 0} hari × ${formatRupiah(mealRate)})`, value: payroll.mealAllowance },
+        { label: `Uang Transport (${payroll.attendanceSummary?.daysPresent || 0} hari × ${formatRupiah(transRate)})`, value: payroll.transportAllowance },
         { label: 'Reimbursement (Disetujui)', value: payroll.reimbursement },
         { label: 'Tunjangan / Bonus Lain', value: payroll.otherAllowance },
       ];
@@ -131,10 +138,10 @@ async function generatePayslipPDF(payroll) {
       ey += 26;
 
       const deductions = [
-        { label: `Potongan Keterlambatan (${payroll.lateDays || 0} hari × Rp 50.000)`, value: payroll.latePenalty },
+        { label: `Potongan Keterlambatan (${payroll.lateDays || 0} hari × ${formatRupiah(lateRate)})`, value: payroll.latePenalty },
         { label: `Potongan Cuti Tidak Dibayar (${payroll.unpaidLeaveDays || 0} hari)`, value: payroll.unpaidLeaveDeduction },
-        { label: 'BPJS Kesehatan (1%)', value: payroll.bpjsKesehatan },
-        { label: 'BPJS Ketenagakerjaan (2%)', value: payroll.bpjsKetenagakerjaan },
+        { label: `BPJS Kesehatan (${bpjsKS}%)`, value: payroll.bpjsKesehatan },
+        { label: `BPJS Ketenagakerjaan (${bpjsTK}%)`, value: payroll.bpjsKetenagakerjaan },
         { label: `PPh 21 (PTKP: ${payroll.ptkpStatus || 'TK/0'})`, value: payroll.pph21 },
       ];
 
@@ -161,7 +168,7 @@ async function generatePayslipPDF(payroll) {
       // ---- FOOTER ----
       ey += 70;
       doc.fontSize(8).font('Helvetica').fillColor('#94a3b8')
-        .text(`Dokumen ini di-generate secara otomatis oleh sistem EMS pada ${new Date().toLocaleString('id-ID')}`, 50, ey, { align: 'center' });
+        .text(`Dokumen ini di-generate secara otomatis oleh sistem OUR pada ${new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })}`, 50, ey, { align: 'center' });
       doc.text('Slip gaji ini bersifat rahasia dan hanya ditujukan untuk karyawan yang bersangkutan.', 50, ey + 12, { align: 'center' });
 
       doc.end();

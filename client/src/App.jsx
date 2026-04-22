@@ -601,18 +601,34 @@ function App() {
   };
 
 
+  // ==================== DAILY DEADLINE LOGIC ====================
+  const hasApprovedOvertimeToday = requests.some(r => 
+    r.type === 'Overtime' && 
+    r.status === 'Approved' && 
+    new Date(r.startDate).toDateString() === currentTime.toDateString()
+  );
+
+  const deadlineHour = hasApprovedOvertimeToday ? 20.25 : 19.0; // 20:15 vs 19:00
+  const deadlineMins = Math.floor(deadlineHour * 60);
+
   // ==================== RENDER ====================
   if (!user) return <LoginPage loading={loading} statusMsg={statusMsg} handleLoginSuccess={handleLoginSuccess} handleLoginError={handleLoginError} />;
 
-  const isClockedIn = history.length > 0 && history[0].type === 'clock_in' && new Date(history[0].timestamp).toDateString() === currentTime.toDateString() && currentTime.getHours() < 19;
+  const isClockedIn = history.length > 0 && 
+    history[0].type === 'clock_in' && 
+    new Date(history[0].timestamp).toDateString() === currentTime.toDateString() && 
+    (currentTime.getHours() + currentTime.getMinutes() / 60) < deadlineHour;
 
   return (
     <div className="dashboard-page">
       {/* Clock-out Reminder Banner */}
       {(() => {
         const hr = currentTime.getHours(); const mins = currentTime.getMinutes(); const totalMins = hr * 60 + mins;
-        if (isClockedIn && totalMins >= 1080 && totalMins < 1140) {
-          return (<div className="deadline-reminder-banner animate-fadeInDown"><span className="material-icons-outlined">warning</span><p>Peringatan: <strong>{1140 - totalMins} menit</strong> lagi menuju batas waktu clock-out (19:00). Segera absen pulang!</p></div>);
+        // Start showing reminder 1 hour before deadline
+        if (isClockedIn && totalMins >= (deadlineMins - 60) && totalMins < deadlineMins) {
+          const timeLeft = deadlineMins - totalMins;
+          const deadlineStr = hasApprovedOvertimeToday ? '20:15 (Lembur)' : '19:00';
+          return (<div className="deadline-reminder-banner animate-fadeInDown"><span className="material-icons-outlined">warning</span><p>Peringatan: <strong>{timeLeft} menit</strong> lagi menuju batas waktu clock-out ({deadlineStr}). Segera absen pulang!</p></div>);
         }
         return null;
       })()}

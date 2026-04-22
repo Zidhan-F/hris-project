@@ -9,7 +9,7 @@ export default function Sidebar({ sidebarOpen, sidebarClosing, closeSidebar, act
           <span className="material-icons-outlined">menu_open</span>
         </button>
         <div className="sidebar-logo"><span className="material-icons-outlined">verified_user</span></div>
-        <div className="sidebar-company"><span className="sidebar-company-name">EMS COMPANY</span></div>
+        <div className="sidebar-company"><span className="sidebar-company-name">OUR Company</span></div>
       </div>
       <nav className="sidebar-nav">
         {MENU_ITEMS.map((item) => (

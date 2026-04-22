@@ -34,8 +34,8 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
     const deltaLambda = (lon2 - lon1) * Math.PI / 180;
 
     const a = Math.sin(deltaPhi / 2) * Math.sin(deltaPhi / 2) +
-              Math.cos(phi1) * Math.cos(phi2) *
-              Math.sin(deltaLambda / 2) * Math.sin(deltaLambda / 2);
+        Math.cos(phi1) * Math.cos(phi2) *
+        Math.sin(deltaLambda / 2) * Math.sin(deltaLambda / 2);
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 
     return R * c; // in meters
@@ -379,6 +379,21 @@ app.post('/api/auth/google', async (req, res) => {
 app.post('/api/attendance/submit', authMiddleware, async (req, res) => {
     try {
         const { lat, lng, type } = req.body;
+        const clockType = type || 'clock_in';
+
+        // --- TIME WINDOW VERIFICATION ---
+        const now = new Date();
+        const jakartaTime = now.toLocaleString('en-US', { timeZone: 'Asia/Jakarta', hour12: false });
+        const timePart = jakartaTime.split(', ')[1];
+        if (timePart && clockType === 'clock_in') {
+            const [h, m] = timePart.split(':').map(Number);
+            if (h < 7) {
+                return res.status(400).json({
+                    success: false,
+                    message: `Absensi Gagal: Jam operasional absen masuk dimulai pukul 07:00 WIB. (Sekarang ${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')} WIB)`
+                });
+            }
+        }
 
         // Validate input
         if (lat === undefined || lng === undefined) {
@@ -391,7 +406,7 @@ app.post('/api/attendance/submit', authMiddleware, async (req, res) => {
         // --- GEOFENCING VERIFICATION (Logic Refined) ---
         const officeSetting = await Settings.findOne({ key: 'office_location' });
         const office = officeSetting ? officeSetting.value : { lat: -6.1528, lng: 106.7909, radius: 100 }; // Fallback to default
-        
+
         // Explicitly cast to Number to avoid string comparison errors
         const userLat = Number(lat);
         const userLng = Number(lng);
@@ -421,7 +436,7 @@ app.post('/api/attendance/submit', authMiddleware, async (req, res) => {
             profilePicture: req.user.profilePicture,
             latitude: lat,
             longitude: lng,
-            type: type || 'clock_in'
+            type: clockType
         });
 
 
@@ -435,7 +450,7 @@ app.post('/api/attendance/submit', authMiddleware, async (req, res) => {
                 name: req.user.name,
                 latitude: lat,
                 longitude: lng,
-                type: type || 'clock_in',
+                type: clockType,
                 timestamp: absenBaru.timestamp
             }
         });
@@ -515,7 +530,7 @@ app.get('/api/attendance/summary/today', authMiddleware, async (req, res) => {
         const isBefore7PM = new Date().getHours() < 19;
         const presentCount = Object.values(usersAttendance).filter(u => u.in && (u.out || isBefore7PM)).length;
 
-        const lateThresholdMinutes = 9 * 60 + 30;
+        const lateThresholdMinutes = 9 * 60 + 15; // 09:15
         const userFirstIn = {};
         todayRecords.forEach(r => {
             if (r.type === 'clock_in') {
@@ -561,7 +576,7 @@ app.get('/api/attendance/summary/monthly', authMiddleware, requireRole('admin', 
             timestamp: { $gte: start, $lte: end }
         });
 
-        const lateThresholdMinutes = 9 * 60 + 30;
+        const lateThresholdMinutes = 9 * 60 + 15; // 09:15
 
         const reports = users.map(user => {
             const userAtt = attendance.filter(a => a.email.toLowerCase() === user.email.toLowerCase());
@@ -761,8 +776,8 @@ app.delete('/api/employees/:id', authMiddleware, requireRole('admin'), async (re
 app.put('/api/employees/:id/payroll', authMiddleware, requireRole('admin', 'manager', 'hrd'), async (req, res) => {
     try {
         const { id } = req.params;
-        const { 
-            baseSalary, allowance, role, bankAccount, bankName, ptkpStatus, 
+        const {
+            baseSalary, allowance, role, bankAccount, bankName, ptkpStatus,
             mealAllowanceRate, transportAllowanceRate, payrollStatus, leaveQuota, contractEnd,
             bpjsKesehatanAmount, bpjsTkAmount, pph21Amount
         } = req.body;
@@ -783,7 +798,7 @@ app.put('/api/employees/:id/payroll', authMiddleware, requireRole('admin', 'mana
         if (role && req.user.role === 'admin') updateData.role = role;
         if (bankAccount !== undefined) updateData.bankAccount = bankAccount;
         if (bankName !== undefined) updateData.bankName = bankName;
-        if (ptkpStatus && ['TK/0','TK/1','TK/2','TK/3','K/0','K/1','K/2','K/3'].includes(ptkpStatus)) {
+        if (ptkpStatus && ['TK/0', 'TK/1', 'TK/2', 'TK/3', 'K/0', 'K/1', 'K/2', 'K/3'].includes(ptkpStatus)) {
             updateData.ptkpStatus = ptkpStatus;
         }
         if (mealAllowanceRate !== undefined) updateData.mealAllowanceRate = Number(mealAllowanceRate);
@@ -1058,11 +1073,11 @@ app.put('/api/requests/:id/status', authMiddleware, requireRole('admin', 'manage
                 const start = new Date(oldRequest.startDate);
                 const end = new Date(oldRequest.endDate);
                 const requestedDays = Math.ceil(Math.abs(end - start) / (1000 * 60 * 60 * 24)) + 1;
-                
+
                 // Calculate how many days can be "Paid" from quota
                 const currentQuota = Math.max(0, user.leaveQuota || 0);
                 const paidDays = Math.min(requestedDays, currentQuota);
-                
+
                 unpaidDays = Math.max(0, requestedDays - paidDays);
                 isUnpaid = unpaidDays > 0;
 
@@ -1076,10 +1091,10 @@ app.put('/api/requests/:id/status', authMiddleware, requireRole('admin', 'manage
             }
         }
 
-        const updatedRequest = await Request.findByIdAndUpdate(id, { 
-            status, 
-            unpaidDays, 
-            isUnpaid 
+        const updatedRequest = await Request.findByIdAndUpdate(id, {
+            status,
+            unpaidDays,
+            isUnpaid
         }, { new: true });
 
         res.status(200).json({ success: true, message: `Request ${status}!`, request: updatedRequest });
@@ -1121,12 +1136,12 @@ app.put('/api/settings/office', authMiddleware, requireRole('admin', 'hrd'), asy
 
         const setting = await Settings.findOneAndUpdate(
             { key: 'office_location' },
-            { 
-                value: { 
-                    lat: parsedLat, 
-                    lng: parsedLng, 
-                    radius: parsedRadius, 
-                    name: name || 'EMS Office' 
+            {
+                value: {
+                    lat: parsedLat,
+                    lng: parsedLng,
+                    radius: parsedRadius,
+                    name: name || 'EMS Office'
                 },
                 updatedAt: new Date() // Force timestamp update for sync visibility
             },
@@ -1326,11 +1341,11 @@ app.put('/api/payroll/:id/mark-paid', authMiddleware, requireRole('admin', 'hrd'
             { status: 'Paid', updatedAt: new Date() },
             { new: true }
         );
-        
+
         if (!record) {
-            return res.status(400).json({ 
-                success: false, 
-                message: 'Record tidak ditemukan atau belum berstatus Finalized. Harap finalize dahulu.' 
+            return res.status(400).json({
+                success: false,
+                message: 'Record tidak ditemukan atau belum berstatus Finalized. Harap finalize dahulu.'
             });
         }
 
@@ -1359,12 +1374,12 @@ app.put('/api/payroll/mark-all-paid', authMiddleware, requireRole('admin', 'hrd'
         const targetYear = year !== undefined ? parseInt(year) : new Date().getFullYear();
 
         // Only process records that are already Finalized
-        const query = { 
-            'period.month': targetMonth, 
-            'period.year': targetYear, 
+        const query = {
+            'period.month': targetMonth,
+            'period.year': targetYear,
             status: 'Finalized'
         };
-        
+
         if (ids && ids.length > 0) {
             query._id = { $in: ids };
         }
@@ -1374,7 +1389,7 @@ app.put('/api/payroll/mark-all-paid', authMiddleware, requireRole('admin', 'hrd'
 
         // Bulk update Payrolls
         await Payroll.updateMany(query, { status: 'Paid', updatedAt: new Date() });
-        
+
         // Bulk update Users
         if (employeeIds.length > 0) {
             await User.updateMany({ _id: { $in: employeeIds } }, { payrollStatus: 'Paid' });
@@ -1429,10 +1444,10 @@ app.put('/api/payroll/mark-all-unpaid', authMiddleware, requireRole('admin', 'hr
         const targetMonth = month !== undefined ? parseInt(month) : new Date().getMonth();
         const targetYear = year !== undefined ? parseInt(year) : new Date().getFullYear();
 
-        const query = { 
-            'period.month': targetMonth, 
-            'period.year': targetYear, 
-            status: { $in: ['Paid', 'Finalized'] } 
+        const query = {
+            'period.month': targetMonth,
+            'period.year': targetYear,
+            status: { $in: ['Paid', 'Finalized'] }
         };
         if (ids && ids.length > 0) {
             query._id = { $in: ids };
@@ -1443,7 +1458,7 @@ app.put('/api/payroll/mark-all-unpaid', authMiddleware, requireRole('admin', 'hr
 
         // Bulk update Payrolls
         await Payroll.updateMany(query, { status: 'Draft', updatedAt: new Date() });
-        
+
         // Bulk update Users
         if (employeeIds.length > 0) {
             await User.updateMany({ _id: { $in: employeeIds } }, { payrollStatus: 'Unpaid' });
@@ -1543,7 +1558,7 @@ app.get('/api/payroll/export-bank', authMiddleware, requireRole('admin', 'hrd'),
         const { month, year, format, ids } = req.query;
         const targetMonth = month !== undefined ? parseInt(month) : new Date().getMonth();
         const targetYear = year !== undefined ? parseInt(year) : new Date().getFullYear();
-        
+
         let idArray = [];
         if (ids) {
             idArray = ids.split(',').filter(id => id.trim().length > 0);
@@ -1581,14 +1596,14 @@ app.get('/api/payroll/export-bank', authMiddleware, requireRole('admin', 'hrd'),
 app.get('/api/settings/payroll', authMiddleware, requireRole('admin', 'hrd'), async (req, res) => {
     try {
         let settings = await PayrollSettings.findOne();
-        
+
         // If no settings exist yet, create default one
         if (!settings) {
             settings = await PayrollSettings.create({});
         }
-        
-        res.json({ 
-            success: true, 
+
+        res.json({
+            success: true,
             settings: {
                 LATE_PENALTY_PER_DAY: settings.latePenaltyPerDay || 50000,
                 OVERTIME_RATE_PER_HOUR: settings.overtimeRatePerHour || 30000,
@@ -1596,7 +1611,7 @@ app.get('/api/settings/payroll', authMiddleware, requireRole('admin', 'hrd'), as
                 TRANSPORT_ALLOWANCE_PER_DAY: settings.transportAllowancePerDay || 20000,
             },
             fullSettings: settings,
-            defaults: RATES 
+            defaults: RATES
         });
     } catch (error) {
         console.error('Fetch payroll settings error:', error);
@@ -1608,9 +1623,9 @@ app.get('/api/settings/payroll', authMiddleware, requireRole('admin', 'hrd'), as
 app.put('/api/settings/payroll', authMiddleware, requireRole('admin', 'hrd'), async (req, res) => {
     try {
         const { key, value, settings } = req.body;
-        
+
         const updateData = { updatedAt: new Date(), updatedBy: req.user.email };
-        
+
         if (settings) {
             // Bulk update all settings
             if (settings.LATE_PENALTY_PER_DAY !== undefined) updateData.latePenaltyPerDay = settings.LATE_PENALTY_PER_DAY;

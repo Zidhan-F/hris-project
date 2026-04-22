@@ -15,6 +15,18 @@ export default function RequestModal({ user, selectedRequestType, requestFormDat
               </div>
             </div>
           )}
+          {selectedRequestType === 'Overtime' && (
+            <div className="quota-display" style={{ padding: '12px', background: '#fef3c7', borderRadius: '12px', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <span className="material-icons-outlined" style={{ color: '#d97706' }}>info</span>
+              <div>
+                <div style={{ fontSize: '12px', fontWeight: '600', color: '#92400e' }}>Info Lembur</div>
+                <div style={{ fontSize: '11px', color: '#b45309' }}>
+                  Lembur hanya untuk 2 jam tambahan (18:00 - 20:00).<br/>
+                  Jam 17:00 - 18:00 terhitung otomatis jika Anda pulang di atas jam 18:00.
+                </div>
+              </div>
+            </div>
+          )}
           <div className="form-row">
             <div className="form-group"><label>Start Date</label><input type="date" required value={requestFormData.startDate} onChange={e => setRequestFormData({ ...requestFormData, startDate: e.target.value })} /></div>
             {['Leave', 'Sick', 'Permit'].includes(selectedRequestType) && (

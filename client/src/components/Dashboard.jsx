@@ -31,36 +31,34 @@ export default function Dashboard({
           <p className="welcome-position"><span className="material-icons-outlined">badge</span>{user.position || 'Staff'} - {user.role || 'Employee'}</p>
           <div className="welcome-badges">
             <span className="badge badge-department"><span className="material-icons-outlined">apartment</span>General</span>
-            <span className="badge badge-location"><span className="material-icons-outlined">location_on</span>EMS Office</span>
+            <span className="badge badge-location"><span className="material-icons-outlined">location_on</span>OUR Office</span>
           </div>
         </div>
       </div>
 
-      <div className="stats-grid animate-fadeInScale" style={{ padding: '0 20px', marginBottom: '24px', animationDelay: '0.1s' }}>
-        <div className="stat-card glass-panel">
-          <div className="stat-label">Total Staff</div>
-          <div className="vibrant-value blue">{attendanceSummary.totalStaff}</div>
+      {['admin', 'manager', 'hrd'].includes(user?.role) && (
+        <div className="stats-grid animate-fadeInScale" style={{ padding: '0 20px', marginBottom: '24px', animationDelay: '0.1s' }}>
+          <div className="stat-card glass-panel">
+            <div className="stat-label">Total Staff</div>
+            <div className="vibrant-value blue">{attendanceSummary.totalStaff}</div>
+          </div>
+          <div className="stat-card glass-panel">
+            <div className="stat-label">Present Today</div>
+            <div className="vibrant-value green">
+              {attendanceSummary.presentCount}
+              <span style={{ fontSize: '12px', marginLeft: '4px', fontWeight: '400', color: '#64748b' }}>
+                ({Math.round((attendanceSummary.presentCount / (attendanceSummary.totalStaff || 1)) * 100)}%)
+              </span>
+            </div>
+          </div>
+          <div className="stat-card glass-panel">
+            <div className="stat-label">Late Arrivals</div>
+            <div className="vibrant-value red">
+              {attendanceSummary.lateCount}
+            </div>
+          </div>
         </div>
-        {['admin', 'manager', 'hrd'].includes(user?.role) && (
-          <>
-            <div className="stat-card glass-panel">
-              <div className="stat-label">Present Today</div>
-              <div className="vibrant-value green">
-                {attendanceSummary.presentCount}
-                <span style={{ fontSize: '12px', marginLeft: '4px', fontWeight: '400', color: '#64748b' }}>
-                  ({Math.round((attendanceSummary.presentCount / (attendanceSummary.totalStaff || 1)) * 100)}%)
-                </span>
-              </div>
-            </div>
-            <div className="stat-card glass-panel">
-              <div className="stat-label">Late Arrivals</div>
-              <div className="vibrant-value red">
-                {attendanceSummary.lateCount}
-              </div>
-            </div>
-          </>
-        )}
-      </div>
+      )}
 
       <div className="tabs-container">
         <div className="tabs-row">
@@ -82,7 +80,7 @@ export default function Dashboard({
           <div className="feed-updates-header">
             <div className="feed-updates-left">
               <div className="feed-updates-icon"><span className="material-icons-outlined">newspaper</span></div>
-              <span className="feed-updates-title">All Updates <span className="feed-updates-count">{recentActivities.length}</span></span>
+              <span className="feed-updates-title">All Updates</span>
             </div>
             <button className="feed-view-more" onClick={handleDashboardViewMore}>View More<span className="material-icons-outlined">arrow_forward</span></button>
           </div>

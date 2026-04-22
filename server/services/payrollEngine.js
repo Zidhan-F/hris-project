@@ -16,8 +16,8 @@ const RATES = {
   TRANSPORT_ALLOWANCE_PER_DAY: 20000, // Rp 20.000 per hari hadir
   BPJS_KESEHATAN_RATE: 0.01,          // 1% dari gaji pokok
   BPJS_KETENAGAKERJAAN_RATE: 0.02,    // 2% dari gaji pokok
-  WORK_HOURS_START: 8.5,              // 08:30 — batas terlambat
-  OVERTIME_START: 18,                  // 18:00 — mulai lembur
+  WORK_HOURS_START: 9.25,             // 09:15 — batas terlambat
+  OVERTIME_START: 17,                  // 17:00 — mulai lembur
   WORKING_DAYS_PER_MONTH: 22,         // Asumsi hari kerja
 };
 
@@ -119,9 +119,10 @@ async function getAttendanceSummary(email, month, year, manualOvertimeByDay = {}
     }
 
     // NEW LOGIC: Tiered & Capped Overtime
-    // Max 2 hours automatic. Anything more requires a manual request.
+    // 1 hour automatic (17:00-18:00). Anything more requires a manual request.
     const dailyManualOvertime = manualOvertimeByDay[dateStr] || 0;
-    const validatedDailyHours = Math.max(Math.min(dailyAutoOvertime, 2), dailyManualOvertime);
+    // Total = auto (max 1) + manual portion
+    const validatedDailyHours = Math.min(dailyAutoOvertime, 1) + dailyManualOvertime;
     
     overtimeHours += validatedDailyHours;
     if (validatedDailyHours > 0) {
@@ -238,6 +239,7 @@ async function calculateEmployeePayroll(userId, month, year, calculatedBy = 'sys
     if (pSettings) {
       if (pSettings.latePenaltyPerDay !== undefined) settings.LATE_PENALTY_PER_DAY = pSettings.latePenaltyPerDay;
       if (pSettings.overtimeRatePerHour !== undefined) settings.OVERTIME_PER_HOUR = pSettings.overtimeRatePerHour;
+      if (pSettings.workHoursStart !== undefined) settings.WORK_HOURS_START = pSettings.workHoursStart;
     }
   } catch (err) {
     console.error('Failed to fetch PayrollSettings:', err.message);
@@ -251,19 +253,22 @@ async function calculateEmployeePayroll(userId, month, year, calculatedBy = 'sys
   let overtimePay = 0;
   const overtimeRateBase = settings.OVERTIME_PER_HOUR;
   
-  Object.values(attendance.dailyOvertimeDetails || {}).forEach(hours => {
-    if (hours > 0) {
-      // First hour at 1.5x
-      const firstHour = Math.min(hours, 1);
-      overtimePay += firstHour * 1.5 * overtimeRateBase;
-      
-      // Additional hours at 2.0x
-      if (hours > 1) {
-        const extraHours = hours - 1;
-        overtimePay += extraHours * 2.0 * overtimeRateBase;
+  // Only calculate overtime pay for 'employee' role. Management roles are generally exempt.
+  if (user.role === 'employee') {
+    Object.values(attendance.dailyOvertimeDetails || {}).forEach(hours => {
+      if (hours > 0) {
+        // First hour at 1.5x
+        const firstHour = Math.min(hours, 1);
+        overtimePay += firstHour * 1.5 * overtimeRateBase;
+        
+        // Additional hours at 2.0x
+        if (hours > 1) {
+          const extraHours = hours - 1;
+          overtimePay += extraHours * 2.0 * overtimeRateBase;
+        }
       }
-    }
-  });
+    });
+  }
 
   const overtimeHoursTotal = Math.round(attendance.overtimeHours * 10) / 10;
   
@@ -347,6 +352,14 @@ async function calculateEmployeePayroll(userId, month, year, calculatedBy = 'sys
     grossPay,
     totalDeductions,
     netPay,
+
+    // Store rates for PDF & historical reference
+    overtimeRatePerHour: settings.OVERTIME_PER_HOUR,
+    mealAllowanceRate: mealRate,
+    transportAllowanceRate: transportRate,
+    latePenaltyPerDay: settings.LATE_PENALTY_PER_DAY,
+    bpjsKesehatanRate: RATES.BPJS_KESEHATAN_RATE,
+    bpjsKetenagakerjaanRate: RATES.BPJS_KETENAGAKERJAAN_RATE,
 
     attendanceSummary: attendance,
 

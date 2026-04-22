@@ -45,7 +45,7 @@ async function sendPayslipEmail(payroll, pdfBuffer) {
       <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 600px; margin: 0 auto; background: #f8fafc; border-radius: 12px; overflow: hidden;">
         <!-- Header -->
         <div style="background: linear-gradient(135deg, #1e3a5f, #2563eb); padding: 30px; text-align: center;">
-          <h1 style="color: white; margin: 0; font-size: 24px;">EMS COMPANY</h1>
+          <h1 style="color: white; margin: 0; font-size: 24px;">OUR Company</h1>
           <p style="color: #93c5fd; margin: 8px 0 0; font-size: 14px;">Slip Gaji — ${periodStr}</p>
         </div>
 
