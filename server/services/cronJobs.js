@@ -5,7 +5,7 @@ const { calculateAllPayroll } = require('./payrollEngine');
 
 
 const { generatePayslipPDF } = require('./pdfGenerator');
-const { sendBulkPayslips } = require('./emailService');
+const { sendBulkPayslips, sendBulkAttendanceReminders } = require('./emailService');
 const Payroll = require('../models/Payroll');
 
 let cronStatus = {
@@ -97,8 +97,8 @@ function initCronJobs() {
 
       if (missingUsers.length > 0) {
         console.log(`📡 [CRON] Sending reminders to ${missingUsers.length} employees...`);
-        // Logic to send email/push notification would go here
-        // For now, we log it.
+        const stats = await sendBulkAttendanceReminders(missingUsers);
+        console.log(`✅ [CRON] Reminders sent: ${stats.sent} success, ${stats.failed} failed`);
       }
     } catch (err) {
       console.error('❌ [CRON] Attendance reminder check failed:', err.message);

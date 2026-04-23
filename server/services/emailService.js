@@ -1,10 +1,14 @@
 const nodemailer = require('nodemailer');
 const { getMonthName } = require('./payrollEngine');
 
+let transporterInstance = null;
+
 // ============================================================
 // EMAIL TRANSPORTER SETUP
 // ============================================================
 function createTransporter() {
+  if (transporterInstance) return transporterInstance;
+
   // Use environment variables for SMTP config
   const host = process.env.SMTP_HOST || 'smtp.gmail.com';
   const port = parseInt(process.env.SMTP_PORT) || 587;
@@ -16,12 +20,85 @@ function createTransporter() {
     return null;
   }
 
-  return nodemailer.createTransport({
+  transporterInstance = nodemailer.createTransport({
     host,
     port,
     secure: port === 465,
     auth: { user, pass }
   });
+
+  return transporterInstance;
+}
+
+// ============================================================
+// SEND ATTENDANCE REMINDER EMAIL
+// ============================================================
+async function sendAttendanceReminder(user) {
+  const transporter = createTransporter();
+  if (!transporter) return { success: false, message: 'SMTP not configured' };
+
+  const mailOptions = {
+    from: `"EMS Notification" <${process.env.SMTP_USER || process.env.EMAIL_USER}>`,
+    to: user.email,
+    subject: `🔔 Pengingat Absensi Hari Ini — ${user.name}`,
+    html: `
+      <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 600px; margin: 0 auto; background: #f8fafc; border-radius: 12px; overflow: hidden; border: 1px solid #e2e8f0;">
+        <div style="background: #ef4444; padding: 20px; text-align: center;">
+          <h1 style="color: white; margin: 0; font-size: 20px;">Pengingat Absensi</h1>
+        </div>
+        <div style="padding: 30px; background: white;">
+          <p style="color: #334155; font-size: 16px;">Halo <strong>${user.name}</strong>,</p>
+          <p style="color: #64748b; font-size: 14px; line-height: 1.6;">
+            Kami mencatat bahwa Anda belum melakukan <strong>Clock In</strong> hingga pukul 08:30 WIB hari ini. 
+            Mohon segera melakukan absensi melalui aplikasi untuk menghindari potongan keterlambatan.
+          </p>
+          <div style="text-align: center; margin: 30px 0;">
+            <a href="${process.env.FRONTEND_URL || 'http://localhost:5173'}" 
+               style="background: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: 600; display: inline-block;">
+               Buka Aplikasi EMS
+            </a>
+          </div>
+          <p style="color: #94a3b8; font-size: 12px; font-style: italic;">
+            *Jika Anda sudah melakukan absensi atau sedang cuti/ijin, mohon abaikan pesan ini.
+          </p>
+        </div>
+        <div style="background: #f1f5f9; padding: 15px; text-align: center; border-top: 1px solid #e2e8f0;">
+          <p style="color: #94a3b8; font-size: 11px; margin: 0;">© ${new Date().getFullYear()} EMS Technology — Official Notification</p>
+        </div>
+      </div>
+    `
+  };
+
+  try {
+    await transporter.sendMail(mailOptions);
+    return { success: true };
+  } catch (err) {
+    console.error(`❌ Failed to send reminder to ${user.email}:`, err.message);
+    return { success: false, message: err.message };
+  }
+}
+
+// ============================================================
+// SEND BULK ATTENDANCE REMINDERS (Parallel)
+// ============================================================
+async function sendBulkAttendanceReminders(users) {
+  if (!users || users.length === 0) return { sent: 0, failed: 0 };
+
+  console.log(`📡 [EMAIL] Sending parallel reminders to ${users.length} users...`);
+  
+  const promises = users.map(user => sendAttendanceReminder(user));
+  const results = await Promise.allSettled(promises);
+
+  const stats = { sent: 0, failed: 0 };
+  results.forEach(res => {
+    if (res.status === 'fulfilled' && res.value.success) {
+      stats.sent++;
+    } else {
+      stats.failed++;
+    }
+  });
+
+  return stats;
 }
 
 // ============================================================
@@ -162,4 +239,5 @@ async function sendBulkPayslips(payrollRecords, generatePDF) {
   return results;
 }
 
-module.exports = { sendPayslipEmail, sendBulkPayslips };
+module.exports = { sendPayslipEmail, sendBulkPayslips, sendAttendanceReminder, sendBulkAttendanceReminders };
+

@@ -117,24 +117,39 @@ mongoose.connect(process.env.MONGO_URI)
 // ============================================================
 // INLINE MODELS (Attendance & Settings)
 // ============================================================
-const Attendance = mongoose.model('Attendance', new mongoose.Schema({
-    email: String,
+const attendanceSchema = new mongoose.Schema({
+    email: { type: String, index: true },
     name: String,
     profilePicture: String,
     latitude: Number,
     longitude: Number,
     type: { type: String, enum: ['clock_in', 'clock_out'], default: 'clock_in' },
-    timestamp: { type: Date, default: Date.now }
-}));
+    timestamp: { type: Date, default: Date.now, index: true }
+});
+
+// Compound index for faster monthly reporting
+attendanceSchema.index({ email: 1, timestamp: 1 });
+
+const Attendance = mongoose.model('Attendance', attendanceSchema);
 
 
-// Helper to get or init dynamic settings
+// Helper to get or init dynamic settings (with simple memory cache)
+const settingsCache = {};
 
 async function getDynamicSetting(key, defaultValue) {
+    // Return from cache if available (max 5 minutes age)
+    const cached = settingsCache[key];
+    if (cached && (Date.now() - cached.timestamp < 5 * 60 * 1000)) {
+        return cached.value;
+    }
+
     try {
         const setting = await Settings.findOne({ key });
-        return (setting && setting.value !== undefined && setting.value !== null) ? setting.value : defaultValue;
-
+        const value = (setting && setting.value !== undefined && setting.value !== null) ? setting.value : defaultValue;
+        
+        // Update cache
+        settingsCache[key] = { value, timestamp: Date.now() };
+        return value;
     } catch (e) {
         return defaultValue;
     }
@@ -404,8 +419,7 @@ app.post('/api/attendance/submit', authMiddleware, async (req, res) => {
         }
 
         // --- GEOFENCING VERIFICATION (Logic Refined) ---
-        const officeSetting = await Settings.findOne({ key: 'office_location' });
-        const office = officeSetting ? officeSetting.value : { lat: -6.1528, lng: 106.7909, radius: 100 }; // Fallback to default
+        const office = await getDynamicSetting('office_location', { lat: -6.1528, lng: 106.7909, radius: 100 });
 
         // Explicitly cast to Number to avoid string comparison errors
         const userLat = Number(lat);
@@ -578,8 +592,17 @@ app.get('/api/attendance/summary/monthly', authMiddleware, requireRole('admin', 
 
         const lateThresholdMinutes = 9 * 60 + 15; // 09:15
 
+        // OPTIMIZATION: Group attendance records by email into a Map (O(A) time)
+        // This avoids the O(U * A) nested loop issue.
+        const attendanceMap = {};
+        attendance.forEach(a => {
+            const email = a.email.toLowerCase();
+            if (!attendanceMap[email]) attendanceMap[email] = [];
+            attendanceMap[email].push(a);
+        });
+
         const reports = users.map(user => {
-            const userAtt = attendance.filter(a => a.email.toLowerCase() === user.email.toLowerCase());
+            const userAtt = attendanceMap[user.email.toLowerCase()] || [];
 
             const days = {};
             userAtt.forEach(a => {

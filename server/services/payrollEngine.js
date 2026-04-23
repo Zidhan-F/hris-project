@@ -62,13 +62,14 @@ function calculatePPh21Monthly(grossYearly, ptkpStatus) {
 // ============================================================
 // HITUNG ATTENDANCE SUMMARY DARI DATABASE
 // ============================================================
-async function getAttendanceSummary(email, month, year, manualOvertimeByDay = {}) {
+async function getAttendanceSummary(email, month, year, manualOvertimeByDay = {}, preFetchedRecords = null) {
   const Attendance = mongoose.model('Attendance');
 
   const start = new Date(year, month, 1);
   const end = new Date(year, month + 1, 0, 23, 59, 59);
 
-  const records = await Attendance.find({
+  // Optimasi: Gunakan data yang sudah di-fetch jika tersedia
+  const records = preFetchedRecords || await Attendance.find({
     email: { $regex: new RegExp("^" + email.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + "$", "i") },
     timestamp: { $gte: start, $lte: end }
   }).sort({ timestamp: 1 });
@@ -118,10 +119,7 @@ async function getAttendanceSummary(email, month, year, manualOvertimeByDay = {}
       }
     }
 
-    // NEW LOGIC: Tiered & Capped Overtime
-    // 1 hour automatic (17:00-18:00). Anything more requires a manual request.
     const dailyManualOvertime = manualOvertimeByDay[dateStr] || 0;
-    // Total = auto (max 1) + manual portion
     const validatedDailyHours = Math.min(dailyAutoOvertime, 1) + dailyManualOvertime;
     
     overtimeHours += validatedDailyHours;
@@ -142,9 +140,11 @@ async function getAttendanceSummary(email, month, year, manualOvertimeByDay = {}
 // ============================================================
 // HITUNG TOTAL JAM LEMBUR DARI REQUEST YANG APPROVED
 // ============================================================
-async function getApprovedOvertimeHoursPerDay(email, start, end) {
+async function getApprovedOvertimeHoursPerDay(email, start, end, preFetchedRequests = null) {
   const Request = mongoose.model('Request');
-  const overtimeRequests = await Request.find({
+  
+  // Optimasi: Gunakan data yang sudah di-fetch jika tersedia
+  const overtimeRequests = preFetchedRequests || await Request.find({
     email: { $regex: new RegExp("^" + email.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + "$", "i") },
     type: 'Overtime',
     status: 'Approved',
@@ -166,12 +166,13 @@ async function getApprovedOvertimeHoursPerDay(email, start, end) {
 // ============================================================
 // HITUNG REIMBURSEMENT YANG SUDAH APPROVED
 // ============================================================
-async function getApprovedReimbursements(email, month, year) {
+async function getApprovedReimbursements(email, month, year, preFetchedRequests = null) {
   const Request = mongoose.model('Request');
   const start = new Date(year, month, 1);
   const end = new Date(year, month + 1, 0, 23, 59, 59);
 
-  const reimbursements = await Request.find({
+  // Optimasi: Gunakan data yang sudah di-fetch jika tersedia
+  const reimbursements = preFetchedRequests || await Request.find({
     email: { $regex: new RegExp("^" + email.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + "$", "i") },
     type: 'Reimbursement',
     status: 'Approved',
@@ -184,26 +185,22 @@ async function getApprovedReimbursements(email, month, year) {
 // ============================================================
 // HITUNG UNPAID LEAVE DAYS (Cuti Tidak Dibayar)
 // ============================================================
-async function getUnpaidLeaveDays(email, month, year) {
+async function getUnpaidLeaveDays(email, month, year, preFetchedRequests = null) {
   const Request = mongoose.model('Request');
   const start = new Date(year, month, 1);
   const end = new Date(year, month + 1, 0, 23, 59, 59);
 
-  // Cari leave yang sudah approved dan overlap dengan bulan ini
-  const leaves = await Request.find({
+  // Optimasi: Gunakan data yang sudah di-fetch jika tersedia
+  const leaves = preFetchedRequests || await Request.find({
     email: { $regex: new RegExp("^" + email.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + "$", "i") },
-    type: { $in: ['Leave', 'Permit'] }, // Include Permit as it might also be unpaid
+    type: { $in: ['Leave', 'Permit'] },
     status: 'Approved',
     startDate: { $lte: end },
     endDate: { $gte: start }
   });
 
-  // Sum up the unpaidDays stored in the request record
-  // If unpaidDays isn't present (old records), it defaults to 0 in our new schema
   let unpaidDaysTotal = 0;
   leaves.forEach(leave => {
-    // If unpaidDays was explicitly calculated during approval, use it.
-    // Otherwise, we may need a fallback or treat as 0 for safety.
     unpaidDaysTotal += (leave.unpaidDays || 0);
   });
 
@@ -213,55 +210,69 @@ async function getUnpaidLeaveDays(email, month, year) {
 // ============================================================
 // CALCULATE PAYROLL FOR SINGLE EMPLOYEE
 // ============================================================
-async function calculateEmployeePayroll(userId, month, year, calculatedBy = 'system') {
-  const user = await User.findById(userId);
+async function calculateEmployeePayroll(userId, month, year, calculatedBy = 'system', preFetchedData = null) {
+  const user = (preFetchedData && preFetchedData.user) || await User.findById(userId);
   if (!user) throw new Error('User not found');
 
   const start = new Date(year, month, 1);
   const end = new Date(year, month + 1, 0, 23, 59, 59);
 
   // 1. Manual Overtime Requests
-  const manualOvertimeByDay = await getApprovedOvertimeHoursPerDay(user.email, start, end);
+  const manualOvertimeByDay = await getApprovedOvertimeHoursPerDay(
+    user.email, start, end, 
+    preFetchedData?.requests?.filter(r => r.type === 'Overtime')
+  );
 
-  // 2. Attendance Summary (now integrated with manual OT)
-  const attendance = await getAttendanceSummary(user.email, month, year, manualOvertimeByDay);
+  // 2. Attendance Summary
+  const attendance = await getAttendanceSummary(
+    user.email, month, year, manualOvertimeByDay, 
+    preFetchedData?.attendance
+  );
 
   // 3. Reimbursements
-  const reimbursement = await getApprovedReimbursements(user.email, month, year);
+  const reimbursement = await getApprovedReimbursements(
+    user.email, month, year, 
+    preFetchedData?.requests?.filter(r => r.type === 'Reimbursement')
+  );
 
   // 4. Unpaid Leave
-  const unpaidLeaveDays = await getUnpaidLeaveDays(user.email, month, year);
+  const unpaidLeaveDays = await getUnpaidLeaveDays(
+    user.email, month, year, 
+    preFetchedData?.requests?.filter(r => ['Leave', 'Permit'].includes(r.type))
+  );
 
-  // 5. Fetch Global Settings
+  // 5. Global Settings
   let settings = { ...RATES };
-  try {
-    const pSettings = await PayrollSettings.findOne();
-    if (pSettings) {
-      if (pSettings.latePenaltyPerDay !== undefined) settings.LATE_PENALTY_PER_DAY = pSettings.latePenaltyPerDay;
-      if (pSettings.overtimeRatePerHour !== undefined) settings.OVERTIME_PER_HOUR = pSettings.overtimeRatePerHour;
-      if (pSettings.workHoursStart !== undefined) settings.WORK_HOURS_START = pSettings.workHoursStart;
+  if (preFetchedData && preFetchedData.payrollSettings) {
+    const pSettings = preFetchedData.payrollSettings;
+    if (pSettings.latePenaltyPerDay !== undefined) settings.LATE_PENALTY_PER_DAY = pSettings.latePenaltyPerDay;
+    if (pSettings.overtimeRatePerHour !== undefined) settings.OVERTIME_PER_HOUR = pSettings.overtimeRatePerHour;
+    if (pSettings.workHoursStart !== undefined) settings.WORK_HOURS_START = pSettings.workHoursStart;
+  } else {
+    try {
+      const pSettings = await PayrollSettings.findOne();
+      if (pSettings) {
+        if (pSettings.latePenaltyPerDay !== undefined) settings.LATE_PENALTY_PER_DAY = pSettings.latePenaltyPerDay;
+        if (pSettings.overtimeRatePerHour !== undefined) settings.OVERTIME_PER_HOUR = pSettings.overtimeRatePerHour;
+        if (pSettings.workHoursStart !== undefined) settings.WORK_HOURS_START = pSettings.workHoursStart;
+      }
+    } catch (err) {
+      console.error('Failed to fetch PayrollSettings:', err.message);
     }
-  } catch (err) {
-    console.error('Failed to fetch PayrollSettings:', err.message);
   }
 
-  // 6. Calculate earnings with Tiered Overtime
+  // 6. Calculate earnings
   const baseSalary = user.baseSalary || 5000000;
   const otherAllowance = user.allowance || 0;
   
-  // Tiered logic: 1.5x for 1st hour, 2.0x for subsequent hours (Per Day)
   let overtimePay = 0;
   const overtimeRateBase = settings.OVERTIME_PER_HOUR;
   
-  // Only calculate overtime pay for 'employee' role. Management roles are generally exempt.
   if (user.role === 'employee') {
     Object.values(attendance.dailyOvertimeDetails || {}).forEach(hours => {
       if (hours > 0) {
-        // First hour at 1.5x
         const firstHour = Math.min(hours, 1);
         overtimePay += firstHour * 1.5 * overtimeRateBase;
-        
-        // Additional hours at 2.0x
         if (hours > 1) {
           const extraHours = hours - 1;
           overtimePay += extraHours * 2.0 * overtimeRateBase;
@@ -271,21 +282,17 @@ async function calculateEmployeePayroll(userId, month, year, calculatedBy = 'sys
   }
 
   const overtimeHoursTotal = Math.round(attendance.overtimeHours * 10) / 10;
-  
   const mealRate = user.mealAllowanceRate ?? settings.MEAL_ALLOWANCE_PER_DAY;
   const transportRate = user.transportAllowanceRate ?? settings.TRANSPORT_ALLOWANCE_PER_DAY;
   const mealAllowance = attendance.daysPresent * mealRate;
   const transportAllowance = attendance.daysPresent * transportRate;
 
   const grossPay = baseSalary + otherAllowance + overtimePay + mealAllowance + transportAllowance + reimbursement;
-  const taxableGross = grossPay - reimbursement; // Reimbursement is not taxable income
+  const taxableGross = grossPay - reimbursement;
 
-  // 7. Calculate deductions
   const latePenalty = attendance.daysLate * settings.LATE_PENALTY_PER_DAY;
   const unpaidLeaveDeduction = Math.round((baseSalary / 22) * unpaidLeaveDays);
 
-  
-  // BPJS Overrides (Logic: 0=None, 1=Auto, >1=Manual)
   const bpjsKesehatan = user.bpjsKesehatanAmount === 0 
     ? 0 
     : (user.bpjsKesehatanAmount > 1 
@@ -298,11 +305,9 @@ async function calculateEmployeePayroll(userId, month, year, calculatedBy = 'sys
         ? user.bpjsTkAmount 
         : Math.round(baseSalary * RATES.BPJS_KETENAGAKERJAAN_RATE));
 
-  // 7. PPh 21 Override (Logic: 0=None, 1=Auto, >1=Manual)
   let pph21 = 0;
   let ptkpStatus = user.ptkpStatus || 'TK/0';
   let taxableYearly = taxableGross * 12;
-
 
   if (user.pph21Amount === 0) {
     pph21 = 0;
@@ -310,16 +315,11 @@ async function calculateEmployeePayroll(userId, month, year, calculatedBy = 'sys
     pph21 = user.pph21Amount;
   } else {
     pph21 = calculatePPh21Monthly(taxableYearly, ptkpStatus);
-
   }
 
-
-
   const totalDeductions = latePenalty + unpaidLeaveDeduction + bpjsKesehatan + bpjsKetenagakerjaan + pph21;
-
   const netPay = Math.max(0, grossPay - totalDeductions);
 
-  // 7. Upsert payroll record
   const payrollData = {
     employeeId: user._id,
     email: user.email,
@@ -330,9 +330,7 @@ async function calculateEmployeePayroll(userId, month, year, calculatedBy = 'sys
     profilePicture: user.profilePicture,
     bankAccount: user.bankAccount || '-',
     bankName: user.bankName || '-',
-
     period: { month, year },
-
     baseSalary,
     overtimePay: Math.round(overtimePay),
     overtimeHours: overtimeHoursTotal,
@@ -340,7 +338,6 @@ async function calculateEmployeePayroll(userId, month, year, calculatedBy = 'sys
     transportAllowance,
     reimbursement,
     otherAllowance,
-
     latePenalty,
     lateDays: attendance.daysLate,
     unpaidLeaveDays,
@@ -348,26 +345,19 @@ async function calculateEmployeePayroll(userId, month, year, calculatedBy = 'sys
     bpjsKesehatan,
     bpjsKetenagakerjaan,
     pph21,
-
     grossPay,
     totalDeductions,
     netPay,
-
-    // Store rates for PDF & historical reference
     overtimeRatePerHour: settings.OVERTIME_PER_HOUR,
     mealAllowanceRate: mealRate,
     transportAllowanceRate: transportRate,
     latePenaltyPerDay: settings.LATE_PENALTY_PER_DAY,
     bpjsKesehatanRate: RATES.BPJS_KESEHATAN_RATE,
     bpjsKetenagakerjaanRate: RATES.BPJS_KETENAGAKERJAAN_RATE,
-
     attendanceSummary: attendance,
-
     ptkpStatus,
     ptkpAmount: PTKP_TABLE[ptkpStatus] || PTKP_TABLE['TK/0'],
     taxableIncomeYearly: Math.max(0, taxableYearly - (PTKP_TABLE[ptkpStatus] || PTKP_TABLE['TK/0'])),
-
-
     calculatedAt: new Date(),
     calculatedBy,
     updatedAt: new Date()
@@ -382,7 +372,6 @@ async function calculateEmployeePayroll(userId, month, year, calculatedBy = 'sys
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
 
-  // If we recalculate a Finalized record, revert it to Draft for re-review
   if (payroll.status === 'Finalized') {
     payroll.status = 'Draft';
     await payroll.save();
@@ -392,7 +381,7 @@ async function calculateEmployeePayroll(userId, month, year, calculatedBy = 'sys
 }
 
 // ============================================================
-// CALCULATE PAYROLL FOR ALL EMPLOYEES
+// CALCULATE PAYROLL FOR ALL EMPLOYEES (Bulk Optimized)
 // ============================================================
 async function calculateAllPayroll(month, year, calculatedBy = 'system-cron', ids = []) {
   const query = {};
@@ -400,12 +389,54 @@ async function calculateAllPayroll(month, year, calculatedBy = 'system-cron', id
     query._id = { $in: ids };
   }
   const users = await User.find(query).sort({ name: 1 });
+  
+  // BULK FETCHING: Ambil semua data sekaligus untuk menghindari N+1 query
+  const start = new Date(year, month, 1);
+  const end = new Date(year, month + 1, 0, 23, 59, 59);
+
+  console.log(`🚀 [PAYROLL] Starting bulk calculation for ${users.length} users...`);
+
+  const [allAttendance, allRequests, payrollSettings] = await Promise.all([
+    mongoose.model('Attendance').find({ timestamp: { $gte: start, $lte: end } }),
+    mongoose.model('Request').find({ 
+      status: 'Approved',
+      $or: [
+        { timestamp: { $gte: start, $lte: end } }, // Reimbursements
+        { startDate: { $lte: end }, endDate: { $gte: start } } // Leaves/Overtime
+      ]
+    }),
+    PayrollSettings.findOne()
+  ]);
+
+  // Group data by email untuk pencarian cepat O(1)
+  const attendanceMap = {};
+  allAttendance.forEach(a => {
+    const email = a.email.toLowerCase();
+    if (!attendanceMap[email]) attendanceMap[email] = [];
+    attendanceMap[email].push(a);
+  });
+
+  const requestMap = {};
+  allRequests.forEach(r => {
+    const email = r.email.toLowerCase();
+    if (!requestMap[email]) requestMap[email] = [];
+    requestMap[email].push(r);
+  });
+
   const results = [];
   const errors = [];
 
   for (const user of users) {
     try {
-      const payroll = await calculateEmployeePayroll(user._id, month, year, calculatedBy);
+      const email = user.email.toLowerCase();
+      const preFetchedData = {
+        user,
+        attendance: attendanceMap[email] || [],
+        requests: requestMap[email] || [],
+        payrollSettings
+      };
+
+      const payroll = await calculateEmployeePayroll(user._id, month, year, calculatedBy, preFetchedData);
       results.push(payroll);
     } catch (err) {
       errors.push({ email: user.email, error: err.message });

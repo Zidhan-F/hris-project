@@ -86,7 +86,7 @@ export default function EditPayrollModal({ editPayrollData, setEditPayrollData, 
               </div>
               <div className="form-group">
                 <label>No. Rekening</label>
-                <input value={editPayrollData.bankAccount || ''} onChange={e => setEditPayrollData({ ...editPayrollData, bankAccount: e.target.value })} placeholder="Contoh: 1234567890" />
+                <input value={editPayrollData.bankAccount || ''} onChange={e => setEditPayrollData({ ...editPayrollData, bankAccount: e.target.value })} placeholder="" />
               </div>
             </div>
 
@@ -168,7 +168,7 @@ export default function EditPayrollModal({ editPayrollData, setEditPayrollData, 
                   const eBpjsKes = editPayrollData.bpjsKesehatanAmount === 1 ? Math.round(base * 0.01) : editPayrollData.bpjsKesehatanAmount;
                   const eBpjsTk = editPayrollData.bpjsTkAmount === 1 ? Math.round(base * 0.02) : editPayrollData.bpjsTkAmount;
                   const ePph21 = editPayrollData.pph21Amount === 1 ? calculatePPh21(base, editPayrollData.ptkpStatus) : editPayrollData.pph21Amount;
-                  
+
                   return (
                     <strong>{formatCurrency(
                       base +
