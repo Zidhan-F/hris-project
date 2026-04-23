@@ -54,7 +54,7 @@ app.use(helmet());
 // 2. CORS — Restrict origins (hanya domain yang diizinkan)
 const allowedOrigins = [
     'http://localhost:5173',
-    'http://localhost:3000',
+    'https://hris-project-seven.vercel.app',
     process.env.FRONTEND_URL,  // Set di .env untuk production
 ].filter(Boolean);
 
@@ -146,7 +146,7 @@ async function getDynamicSetting(key, defaultValue) {
     try {
         const setting = await Settings.findOne({ key });
         const value = (setting && setting.value !== undefined && setting.value !== null) ? setting.value : defaultValue;
-        
+
         // Update cache
         settingsCache[key] = { value, timestamp: Date.now() };
         return value;
